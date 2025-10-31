@@ -9,6 +9,24 @@ ENV_FILE="$ROOT_DIR/docker/.env"
 ADMIN_USER="${ADMIN_USER:-}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
 ADMIN_PASS="${ADMIN_PASS:-}"
+CLEAN_ARGS=()
+
+# Parse CLI flags
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--admin-pass)
+			ADMIN_PASS="${2:-}"; shift 2;;
+		--admin-user)
+			ADMIN_USER="${2:-}"; shift 2;;
+		--admin-email)
+			ADMIN_EMAIL="${2:-}"; shift 2;;
+		--purge-local)
+			CLEAN_ARGS+=("--purge-local"); shift;;
+		*)
+			# ignore unknown for now
+			shift;;
+	esac
+done
 
 if [[ -z "$ADMIN_USER" ]]; then
 	ADMIN_USER=$(git config --global user.name || true)
@@ -26,11 +44,11 @@ if [[ -z "$ADMIN_EMAIL" ]]; then
 fi
 
 if [[ -z "$ADMIN_PASS" ]]; then
-	echo "ADMIN_PASS is required (export ADMIN_PASS=...)" >&2
+	echo "ADMIN_PASS is required (pass --admin-pass or export ADMIN_PASS)." >&2
 	exit 2
 fi
 
-"$SCRIPT_DIR/taiga-clean.sh" --yes
+"$SCRIPT_DIR/taiga-clean.sh" --force ${CLEAN_ARGS[*]:-}
 
 if [[ ! -f "$ENV_FILE" ]]; then
 	echo "Missing $ENV_FILE. Copy docker/env.example to docker/.env and configure." >&2
