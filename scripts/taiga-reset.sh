@@ -59,6 +59,15 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 
 "$SCRIPT_DIR/taiga-wait.sh" --timeout 240
 
+# Echo URLs for convenience
+# shellcheck disable=SC2046
+set -a; . "$ENV_FILE"; set +a
+SCHEME="${TAIGA_SITES_SCHEME:-http}"
+HOST="${TAIGA_SITES_DOMAIN:-localhost}"
+PORT="${TAIGA_HTTP_PORT:-9000}"
+echo "Taiga UI:   ${SCHEME}://${HOST}:${PORT}"
+echo "Taiga API:  ${SCHEME}://${HOST}:${PORT}/api/v1/"
+
 set +e
 docker compose -f "$COMPOSE_FILE" exec -T \
 	taiga-back sh -lc \
