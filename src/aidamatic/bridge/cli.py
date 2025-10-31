@@ -47,3 +47,18 @@ def post_status(argv: list[str] | None = None) -> int:
 		r.raise_for_status()
 	print(json.dumps(r.json(), indent=2))
 	return 0
+
+
+def sync_outbox_cmd(argv: list[str] | None = None) -> int:
+	p = argparse.ArgumentParser(description="Trigger outbox sync via AIDA Bridge")
+	p.add_argument("--host", default=DEFAULT_HOST)
+	p.add_argument("--port", type=int, default=DEFAULT_PORT)
+	p.add_argument("--dry-run", action="store_true")
+	args = p.parse_args(argv or sys.argv[1:])
+	url = f"http://{args.host}:{args.port}/sync/outbox"
+	r = requests.post(url, params={"dry_run": str(args.dry_run).lower()})
+	if not r.ok:
+		print(r.text, file=sys.stderr)
+		r.raise_for_status()
+	print(json.dumps(r.json(), indent=2))
+	return 0

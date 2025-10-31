@@ -58,6 +58,34 @@ class TaigaClient:
 		headers = {"Content-Type": "application/json"}
 		return self.session.post(self._url(path), json=json or {}, headers=headers, timeout=self.timeout_s)
 
+	def patch(self, path: str, json: Optional[Dict[str, Any]] = None) -> requests.Response:
+		headers = {"Content-Type": "application/json"}
+		return self.session.patch(self._url(path), json=json or {}, headers=headers, timeout=self.timeout_s)
+
+	# --- Domain helpers ---
+	def update_item_status(self, item_type: str, item_id: int, status_id: int) -> Dict[str, Any]:
+		endpoint = {
+			"issue": f"/api/v1/issues/{item_id}",
+			"userstory": f"/api/v1/userstories/{item_id}",
+			"task": f"/api/v1/tasks/{item_id}",
+		}[item_type]
+		r = self.patch(endpoint, json={"status": status_id})
+		r.raise_for_status()
+		return r.json()
+
+	def post_item_comment(self, item_type: str, item_id: int, text: str) -> Dict[str, Any]:
+		# Common Taiga pattern for comments endpoints
+		endpoint = {
+			"issue": f"/api/v1/issues/{item_id}/comments",
+			"userstory": f"/api/v1/userstories/{item_id}/comments",
+			"task": f"/api/v1/tasks/{item_id}/comments",
+		}[item_type]
+		r = self.post(endpoint, json={"comment": text})
+		# Some installations may return 201 without body
+		if r.status_code not in (200, 201):
+			r.raise_for_status()
+		return r.json() if r.content else {"ok": True}
+
 	# --- Identity & projects ---
 	def get_me(self) -> Dict[str, Any]:
 		resp = self.get("/api/v1/users/me")

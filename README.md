@@ -61,6 +61,11 @@ aida-task-comment --text "Investigating now"
 aida-task-status --to in_progress
 # History
 curl -s 'http://127.0.0.1:8787/task/history'
+
+# Sync outbox to Taiga (requires status-map.json)
+aida-sync
+# Or via HTTP (dry-run first)
+curl -s -X POST 'http://127.0.0.1:8787/sync/outbox?dry_run=true'
 ```
 
 ## Auth and API convenience

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from aidamatic.assignment import load_assignment
 from aidamatic.taiga.client import TaigaClient
+from aidamatic.sync.outbox_worker import sync_outbox, SyncState, STATE_FILE
 
 APP = FastAPI(title="AIDA Bridge", version="0.1.0")
 
@@ -90,11 +91,22 @@ def _ensure_outbox() -> None:
 def _write_outbox(event_type: str, project_id: int, slug: Optional[str], name: Optional[str], payload: dict) -> HistoryItem:
 	_ensure_outbox()
 	ts = datetime.now(timezone.utc).isoformat()
-	content = json.dumps({"t": event_type, "p": project_id, "s": slug, "n": name, "ts": ts, "payload": payload}, sort_keys=True).encode("utf-8")
+	# include selected item snapshot when available
+	assignment = load_assignment()
+	item = None
+	if assignment and assignment.item_id:
+		item = {
+			"type": assignment.item_type,
+			"id": assignment.item_id,
+			"ref": assignment.item_ref,
+			"subject": assignment.item_subject,
+		}
+	record = {"t": event_type, "p": project_id, "s": slug, "n": name, "ts": ts, "payload": payload, "item": item}
+	content = json.dumps(record, sort_keys=True).encode("utf-8")
 	cid = hashlib.sha1(content).hexdigest()  # content-hash for idempotency
 	path = OUTBOX_DIR / f"{ts}-{cid}.json"
 	if not path.exists():
-		path.write_text(content.decode("utf-8"), encoding="utf-8")
+		path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
 	return HistoryItem(id=cid, type=event_type, project_id=project_id, slug=slug, name=name, timestamp=ts, payload=payload)
 
 
@@ -140,6 +152,20 @@ async def task_history(limit: int = Query(50, ge=1, le=500)) -> List[HistoryItem
 		except Exception:
 			continue
 	return results
+
+
+@APP.post("/sync/outbox")
+async def sync_outbox_now(dry_run: bool = False) -> dict:
+	result = sync_outbox(dry_run=dry_run)
+	return result
+
+
+@APP.get("/sync/state")
+async def sync_state() -> dict:
+	if not STATE_FILE.exists():
+		return {"processed": 0, "errors": []}
+	data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+	return {"processed": len(data.get("processed", [])), "errors": data.get("errors", [])}
 
 
 # Uvicorn entry (run only via `aida-bridge`)
