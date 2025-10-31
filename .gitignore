@@ -8,6 +8,9 @@ memory-bank/
 # Token cache for dev scripts
 .taiga_token
 
+# Local AIDA state
+.aida/
+
 # Python cache
 __pycache__/
 *.pyc

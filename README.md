@@ -45,6 +45,24 @@ bash scripts/taiga-up.sh
 # later: bash scripts/taiga-down.sh
 ```
 
+## AIDA Bridge (local HTTP + CLI)
+
+```bash
+# Start the bridge on localhost:8787
+aida-bridge
+# Health
+curl -s http://127.0.0.1:8787/health
+# Projects (scoped)
+curl -s 'http://127.0.0.1:8787/projects'
+# Current assignment
+curl -s 'http://127.0.0.1:8787/task/current'
+# Comment / Status via CLI wrappers
+aida-task-comment --text "Investigating now"
+aida-task-status --to in_progress
+# History
+curl -s 'http://127.0.0.1:8787/task/history'
+```
+
 ## Auth and API convenience
 
 ```bash
