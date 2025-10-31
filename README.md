@@ -2,6 +2,12 @@
 
 AIDA - Scrum Master Agent orchestration for Taiga.
 
+## Platform support
+
+- Supported: Linux and macOS.
+- Windows: supported via WSL2 only. Use Docker Desktop with WSL integration enabled and run all commands from a WSL shell.
+- Native Windows shells (PowerShell/CMD) are not supported for the scripts/CLIs in this repo.
+
 ## Setup
 
 1. Create and activate a virtual environment

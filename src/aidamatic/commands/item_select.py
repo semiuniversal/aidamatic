@@ -20,7 +20,8 @@ def main(argv: list[str] | None = None) -> int:
 	args = parse_args(argv or sys.argv[1:])
 	assignment = load_assignment()
 	if not assignment:
-		raise SystemExit("No assignment selected. Run aida-task-select.")
+		print("No assignment selected. Run aida-task-select.", file=sys.stderr)
+		return 1
 	client = TaigaClient.from_env()
 	endpoint = {
 		"issue": "/api/v1/issues",
@@ -30,15 +31,31 @@ def main(argv: list[str] | None = None) -> int:
 	params = {"project": assignment.project_id}
 	if args.id is not None:
 		item_resp = client.get(f"{endpoint}/{args.id}")
-		item_resp.raise_for_status()
+		if item_resp.status_code == 404:
+			print(f"Item not found by id {args.id}", file=sys.stderr)
+			return 1
+		if not item_resp.ok:
+			print(f"Failed to fetch item id {args.id}: {item_resp.status_code}", file=sys.stderr)
+			try:
+				print(item_resp.text, file=sys.stderr)
+			except Exception:
+				pass
+			return 1
 		item = item_resp.json()
 	else:
 		params["ref"] = args.ref
 		resp = client.get(endpoint, params=params)
-		resp.raise_for_status()
+		if not resp.ok:
+			print(f"Failed to query items by ref {args.ref}: {resp.status_code}", file=sys.stderr)
+			try:
+				print(resp.text, file=sys.stderr)
+			except Exception:
+				pass
+			return 1
 		candidates = [i for i in resp.json() if i.get("ref") == args.ref]
 		if not candidates:
-			raise SystemExit(f"Item not found by ref {args.ref}")
+			print(f"Item not found by ref {args.ref}", file=sys.stderr)
+			return 1
 		item = candidates[0]
 
 	base_url = os.environ.get(ENV_BASE, DEFAULT_BASE_URL)
