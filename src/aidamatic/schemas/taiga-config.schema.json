@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/taiga-config.schema.json",
+  "title": "Taiga Export Config",
+  "type": "object",
+  "required": ["version", "project"],
+  "properties": {
+    "version": {"type": "string", "const": "v1"},
+    "project": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "id": {"type": ["integer", "null"]},
+        "slug": {"type": ["string", "null"]},
+        "name": {"type": "string"},
+        "description": {"type": ["string", "null"]},
+        "is_private": {"type": ["boolean", "null"]},
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "username": {"type": ["string", "null"]},
+              "email": {"type": ["string", "null"]},
+              "role": {"type": ["string", "null"]}
+            }
+          }
+        },
+        "issue_statuses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "slug": {"type": ["string", "null"]},
+              "type": {"type": ["string", "null"]}
+            },
+            "required": ["name"]
+          }
+        },
+        "issue_types": {"type": "array", "items": {"type": "string"}},
+        "userstory_statuses": { "$ref": "#/properties/project/properties/issue_statuses" },
+        "tags": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

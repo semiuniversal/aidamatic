@@ -32,3 +32,5 @@ packages = ["src/aidamatic"]
 
 [project.scripts]
 aida-anthropic-smoke = "aidamatic.cli.smoke_anthropic:main"
+aida-export = "aidamatic.commands.export_config:main"
+aida-import = "aidamatic.commands.import_config:main"

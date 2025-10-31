@@ -8,7 +8,7 @@ AIDA - Scrum Master Agent orchestration for Taiga.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 ```
 
 2. Install in editable mode (supports `uv` or `pip`)
@@ -28,3 +28,59 @@ pip install -e .
 # Example:
 # ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+---
+
+## Taiga stack (Docker)
+
+Quick start (see `doc/taiga_setup.md` for details):
+
+```bash
+cp docker/env.example docker/.env
+# Edit docker/.env and set at least:
+#  SECRET_KEY, TAIGA_SECRET_KEY (long random strings)
+#  TAIGA_ADMIN_PASSWORD (for token scripts)
+
+bash scripts/taiga-up.sh
+# later: bash scripts/taiga-down.sh
+```
+
+## Auth and API convenience
+
+```bash
+# Fetch and cache a token (reads docker/.env)
+scripts/taiga-auth.sh --refresh
+
+# Call the Taiga API with the cached token
+scripts/taiga-api.sh GET /api/v1/projects
+```
+
+## Export / Import project config
+
+```bash
+# Export current project (pick by slug or id)
+aida-export --slug your-project-slug --output taiga-config.json --pretty
+
+# Dry-run import (prints plan)
+aida-import --input taiga-config.json
+
+# Apply import (creates project if missing)
+aida-import --input taiga-config.json --apply
+```
+
+## Smoke test Anthropic
+
+```bash
+aida-anthropic-smoke
+```
+
+## Configuration notes
+
+- Taiga base URL: `TAIGA_BASE_URL` (defaults to `http://localhost:9000`)
+- Taiga image tag pinning: set `TAIGA_TAG` in `docker/.env` (defaults to `latest`)
+- Tokens: CLI uses `TAIGA_TOKEN` if present; otherwise calls `scripts/taiga-auth.sh`
+
+## Documentation
+
+- Taiga setup and usage: `doc/taiga_setup.md`
+- Agent architecture and provider guidance: `doc/scrum_master_agent_intelligence.md`

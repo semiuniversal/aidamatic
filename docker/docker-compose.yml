@@ -45,7 +45,7 @@ services:
       retries: 5
 
   taiga-back:
-    image: taigaio/taiga-back:latest
+    image: taigaio/taiga-back:${TAIGA_TAG:-latest}
     container_name: taiga_back
     restart: unless-stopped
     env_file:
@@ -74,7 +74,7 @@ services:
       - taiga-static:/taiga/static
 
   taiga-front:
-    image: taigaio/taiga-front:latest
+    image: taigaio/taiga-front:${TAIGA_TAG:-latest}
     container_name: taiga_front
     restart: unless-stopped
     env_file:
@@ -83,7 +83,7 @@ services:
       - taiga-back
 
   taiga-events:
-    image: taigaio/taiga-events:latest
+    image: taigaio/taiga-events:${TAIGA_TAG:-latest}
     container_name: taiga_events
     restart: unless-stopped
     env_file:
@@ -92,7 +92,7 @@ services:
       - redis
 
   taiga-protected:
-    image: taigaio/taiga-protected:latest
+    image: taigaio/taiga-protected:${TAIGA_TAG:-latest}
     container_name: taiga_protected
     restart: unless-stopped
     env_file:

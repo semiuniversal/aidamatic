@@ -41,3 +41,11 @@ scripts/taiga-down.sh
 - Call API with token:
   - `scripts/taiga-api.sh GET /api/v1/projects`
   - `scripts/taiga-api.sh POST /api/v1/projects -H 'Content-Type: application/json' -d '{"name":"Demo"}'`
+
+#### 8) Export/Import config
+- Export the current project (by slug or id):
+  - `aida-export --slug your-project-slug --output taiga-config.json --pretty`
+- Dry-run import (prints plan):
+  - `aida-import --input taiga-config.json`
+- Apply import (creates project if missing):
+  - `aida-import --input taiga-config.json --apply`
