@@ -34,3 +34,5 @@ packages = ["src/aidamatic"]
 aida-anthropic-smoke = "aidamatic.cli.smoke_anthropic:main"
 aida-export = "aidamatic.commands.export_config:main"
 aida-import = "aidamatic.commands.import_config:main"
+aida-projects-list = "aidamatic.commands.projects_list:main"
+aida-task-select = "aidamatic.commands.task_select:main"

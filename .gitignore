@@ -7,3 +7,7 @@ memory-bank/
 
 # Token cache for dev scripts
 .taiga_token
+
+# Python cache
+__pycache__/
+*.pyc

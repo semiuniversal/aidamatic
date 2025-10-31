@@ -58,20 +58,45 @@ class TaigaClient:
 		headers = {"Content-Type": "application/json"}
 		return self.session.post(self._url(path), json=json or {}, headers=headers, timeout=self.timeout_s)
 
+	# --- Identity & projects ---
+	def get_me(self) -> Dict[str, Any]:
+		resp = self.get("/api/v1/users/me")
+		resp.raise_for_status()
+		return resp.json()
+
 	def list_projects(self) -> List[Dict[str, Any]]:
-		# Fallback to simple list; caller can filter by slug/name
+		# All visible projects for token; caller may filter
 		r = self.get("/api/v1/projects")
 		r.raise_for_status()
 		data = r.json()
 		return data if isinstance(data, list) else []
 
+	def list_projects_filtered(self, member_id: Optional[int] = None, is_archived: Optional[bool] = None) -> List[Dict[str, Any]]:
+		params: Dict[str, Any] = {}
+		if member_id is not None:
+			params["member"] = member_id
+		if is_archived is not None:
+			params["is_archived"] = str(is_archived).lower()
+		resp = self.get("/api/v1/projects", params=params)
+		resp.raise_for_status()
+		data = resp.json()
+		return data if isinstance(data, list) else []
+
 	def get_project_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
-		# Try direct endpoint, fallback to list + filter
-		resp = self.get("/api/v1/projects")
-		if resp.ok:
-			for p in resp.json():
-				if p.get("slug") == slug:
-					return p
+		# Try filtered query to reduce results
+		me = None
+		try:
+			me = self.get_me()
+		except Exception:
+			me = None
+		projects = self.list_projects_filtered(member_id=(me or {}).get("id"), is_archived=False)
+		for p in projects:
+			if p.get("slug") == slug:
+				return p
+		# Fallback to unfiltered list if not found
+		for p in self.list_projects():
+			if p.get("slug") == slug:
+				return p
 		return None
 
 	def get_memberships(self, project_id: int) -> List[Dict[str, Any]]:

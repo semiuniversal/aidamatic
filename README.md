@@ -55,6 +55,20 @@ scripts/taiga-auth.sh --refresh
 scripts/taiga-api.sh GET /api/v1/projects
 ```
 
+## Project selection & listing
+
+```bash
+# Identity-scoped, active-only listing (default)
+aida-projects-list
+
+# Include archived or filter by tag
+aida-projects-list --all
+ aida-projects-list --tag aida:work
+
+# Select a project for the current IDE session (writes .aida/assignment.json)
+aida-task-select --slug your-project-slug
+```
+
 ## Export / Import project config
 
 ```bash
