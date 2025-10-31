@@ -1,0 +1,9 @@
+.cursor/
+.specstory/
+memory-bank/
+.venv/
+# Local environment files
+.env
+
+# Token cache for dev scripts
+.taiga_token

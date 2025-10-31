@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aidamatic"
+version = "0.1.0"
+description = "AIDA - Scrum Master Agent orchestration for Taiga."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+	{ name = "semiuniversal" }
+]
+keywords = ["aida", "scrum", "taiga", "agent", "llm"]
+
+# Keep runtime deps minimal; provider SDKs can be added per environment later
+# (e.g., anthropic, openai). "requests" and "pydantic" support HTTP and schema validation.
+dependencies = [
+	"requests>=2.32.0",
+	"pydantic>=2.8.0",
+	"python-dotenv>=1.0.1",
+	"anthropic>=0.30.0"
+]
+
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aidamatic"]
+
+[project.scripts]
+aida-anthropic-smoke = "aidamatic.cli.smoke_anthropic:main"

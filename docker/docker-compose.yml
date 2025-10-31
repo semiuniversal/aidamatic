@@ -1,0 +1,120 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: taiga_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-taiga}
+      POSTGRES_USER: ${POSTGRES_USER:-taiga}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taiga}
+    volumes:
+      - taiga-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taiga}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbit:
+    image: rabbitmq:3-alpine
+    container_name: taiga_rabbit
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-taiga}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-taiga}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-taiga}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      default:
+        aliases:
+          - taiga-events-rabbitmq
+
+  redis:
+    image: redis:7-alpine
+    container_name: taiga_redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  taiga-back:
+    image: taigaio/taiga-back:latest
+    container_name: taiga_back
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - EVENTS_PUSH_BACKEND=taiga.events.backends.rabbitmq.EventsPushBackend
+      - EVENTS_PUSH_BACKEND_OPTIONS__url=amqp://taiga:taiga@rabbit:5672/taiga
+      - CELERY_BROKER_URL=amqp://taiga:taiga@rabbit:5672/taiga
+      # Redundant Rabbit variables to satisfy image settings resolution
+      - RABBITMQ_HOST=rabbit
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=taiga
+      - RABBITMQ_PASSWORD=taiga
+      - RABBITMQ_PASS=taiga
+      - RABBITMQ_VHOST=taiga
+      - RABBITMQ_URL=amqp://taiga:taiga@rabbit:5672/taiga
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbit:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - taiga-media:/taiga/media
+      - taiga-static:/taiga/static
+
+  taiga-front:
+    image: taigaio/taiga-front:latest
+    container_name: taiga_front
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - taiga-back
+
+  taiga-events:
+    image: taigaio/taiga-events:latest
+    container_name: taiga_events
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - redis
+
+  taiga-protected:
+    image: taigaio/taiga-protected:latest
+    container_name: taiga_protected
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - taiga-media:/taiga/media
+
+  gateway:
+    image: nginx:1.25-alpine
+    container_name: taiga_gateway
+    restart: unless-stopped
+    depends_on:
+      - taiga-front
+      - taiga-back
+      - taiga-events
+      - taiga-protected
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${TAIGA_HTTP_PORT:-9000}:80"
+
+volumes:
+  taiga-db:
+  taiga-media:
+  taiga-static:
