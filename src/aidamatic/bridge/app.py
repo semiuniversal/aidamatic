@@ -74,6 +74,12 @@ async def task_current() -> dict:
 		"name": assignment.name,
 		"base_url": assignment.base_url,
 		"selected_at": assignment.selected_at,
+		"item": {
+			"type": assignment.item_type,
+			"id": assignment.item_id,
+			"ref": assignment.item_ref,
+			"subject": assignment.item_subject,
+		},
 	}
 
 

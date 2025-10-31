@@ -85,6 +85,14 @@ aida-projects-list --all
 
 # Select a project for the current IDE session (writes .aida/assignment.json)
 aida-task-select --slug your-project-slug
+
+# List items in the selected project (default: issues, assigned to you optional)
+aida-items-list --type issue --assigned-to-me
+
+# Select an item by id or ref
+aida-item-select --type issue --id 123
+# or
+ aida-item-select --type issue --ref 45
 ```
 
 ## Export / Import project config
