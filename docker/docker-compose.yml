@@ -116,5 +116,8 @@ services:
 
 volumes:
   taiga-db:
+    name: docker_taiga-db
   taiga-media:
+    name: docker_taiga-media
   taiga-static:
+    name: docker_taiga-static
