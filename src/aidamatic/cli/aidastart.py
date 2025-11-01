@@ -161,9 +161,34 @@ def main() -> int:
 		]
 		print("\nBringing up Taiga (this can take a moment)...")
 		run(cmd)
+		# Bind profiles from identities.json (developer, scrum)
+		ident_path = Path.cwd() / ".aida" / "identities.json"
+		if ident_path.exists():
+			try:
+				ident = json.loads(ident_path.read_text())
+				dev_user = (ident.get("developer") or {}).get("username")
+				dev_pass = (ident.get("developer") or {}).get("password")
+				if dev_user and dev_pass:
+					os.environ["TAIGA_ADMIN_USER"] = dev_user
+					os.environ["TAIGA_ADMIN_PASSWORD"] = dev_pass
+					run(["aida-taiga-auth", "--profile", "developer", "--activate", "--refresh", "--switch-user"])  # sets default auth.json to developer
+				scrum_user = (ident.get("scrum") or {}).get("username")
+				scrum_pass = (ident.get("scrum") or {}).get("password")
+				if scrum_user and scrum_pass:
+					os.environ["TAIGA_ADMIN_USER"] = scrum_user
+					os.environ["TAIGA_ADMIN_PASSWORD"] = scrum_pass
+					run(["aida-taiga-auth", "--profile", "scrum", "--refresh", "--switch-user"])  # do not activate
+			except Exception:
+				pass
 	else:
 		print("\nStarting existing Taiga stack...")
 		run(["aida-taiga-up"])  # prints URLs
+		# Wait for Taiga gateway and API to be ready before auth
+		try:
+			wait_timeout = os.environ.get("AIDA_TAIGA_WAIT", "180")
+			run(["aida-taiga-wait", "--timeout", wait_timeout])
+		except Exception:
+			pass
 
 	# Ensure auth uses the same credentials we just created
 	if admin_user and admin_pass:
@@ -191,6 +216,8 @@ def main() -> int:
 		run(["aida-task-select", "--slug", slug])
 
 	print("Starting AIDA Bridge on http://127.0.0.1:8787 ...")
+	# Ensure Bridge uses scrum profile by default for sync
+	os.environ["AIDA_AUTH_PROFILE"] = "scrum"
 	start_bridge_background()
 
 	print("\nDone. Useful commands:")

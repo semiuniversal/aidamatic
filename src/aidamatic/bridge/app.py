@@ -5,9 +5,9 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 from aidamatic.assignment import load_assignment
@@ -18,6 +18,9 @@ APP = FastAPI(title="AIDA Bridge", version="0.1.0")
 
 AIDA_DIR = Path(os.getcwd()) / ".aida"
 OUTBOX_DIR = AIDA_DIR / "outbox"
+DOCS_DIR = AIDA_DIR / "docs"
+DOCS_INDEX = AIDA_DIR / "docs.jsonl"
+CHAT_FILE = AIDA_DIR / "chat.jsonl"
 
 
 class ProjectDTO(BaseModel):
@@ -44,6 +47,43 @@ class HistoryItem(BaseModel):
 	name: Optional[str]
 	timestamp: str
 	payload: dict
+
+
+class DocAddJSON(BaseModel):
+	text: Optional[str] = None
+	name: Optional[str] = None
+	tags: Optional[List[str]] = None
+
+
+class DocEntry(BaseModel):
+	id: str
+	name: str
+	path: str
+	bytes: int
+	hash: str
+	tags: List[str] = []
+	added_at: str
+
+
+class ChatSend(BaseModel):
+	role: str = Field(pattern="^(user|assistant|system)$")
+	text: str = Field(min_length=1)
+
+
+class ChatMsg(BaseModel):
+	role: str
+	text: str
+	ts: str
+
+
+class NextSuggestion(BaseModel):
+	item_type: str
+	id: int
+	ref: Optional[int] = None
+	subject: Optional[str] = None
+	status: Optional[str] = None
+	assigned_to: Optional[int] = None
+	priority: Optional[int] = None
 
 
 @APP.get("/health")
@@ -126,6 +166,148 @@ async def task_status(req: StatusReq) -> HistoryItem:
 		raise HTTPException(status_code=409, detail="No assignment selected. Run aida-task-select.")
 	payload = {"to": req.to}
 	return _write_outbox("status", assignment.project_id, assignment.slug, assignment.name, payload)
+
+
+# ---- Docs inbox ----
+
+def _append_jsonl(path: Path, obj: dict) -> None:
+	path.parent.mkdir(parents=True, exist_ok=True)
+	with path.open("a", encoding="utf-8") as f:
+		f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+def _hash_bytes(data: bytes) -> str:
+	return hashlib.sha1(data).hexdigest()
+
+
+def _save_doc_bytes(name: str, data: bytes, tags: Optional[List[str]]) -> DocEntry:
+	DOCS_DIR.mkdir(parents=True, exist_ok=True)
+	h = _hash_bytes(data)
+	ts = datetime.now(timezone.utc).isoformat()
+	safe_name = name or "note.txt"
+	file_path = DOCS_DIR / f"{h[:8]}-{safe_name}"
+	if not file_path.exists():
+		file_path.write_bytes(data)
+	entry = DocEntry(
+		id=h,
+		name=safe_name,
+		path=str(file_path),
+		bytes=len(data),
+		hash=h,
+		tags=tags or [],
+		added_at=ts,
+	)
+	_append_jsonl(DOCS_INDEX, entry.model_dump())
+	return entry
+
+
+@APP.post("/docs", response_model=DocEntry)
+async def docs_add_json(req: DocAddJSON) -> DocEntry:
+	if not req.text:
+		raise HTTPException(status_code=400, detail="text is required (for uploads use /docs/upload)")
+	data = req.text.encode("utf-8")
+	name = req.name or "note.txt"
+	return _save_doc_bytes(name=name, data=data, tags=req.tags or [])
+
+
+@APP.post("/docs/upload", response_model=DocEntry)
+async def docs_upload(file: UploadFile = File(...), tags: Optional[str] = Form(None), name: Optional[str] = Form(None)) -> DocEntry:
+	content = await file.read()
+	parsed_tags: List[str] = []
+	if tags:
+		parsed_tags = [t.strip() for t in tags.split(",") if t.strip()]
+	return _save_doc_bytes(name=name or file.filename, data=content, tags=parsed_tags)
+
+
+@APP.get("/docs", response_model=List[DocEntry])
+async def docs_list(tag: Optional[str] = Query(None)) -> List[DocEntry]:
+	entries: List[DocEntry] = []
+	if DOCS_INDEX.exists():
+		for line in DOCS_INDEX.read_text(encoding="utf-8").splitlines():
+			try:
+				obj = json.loads(line)
+				entry = DocEntry(**obj)
+				entries.append(entry)
+			except Exception:
+				continue
+	if tag:
+		entries = [e for e in entries if tag in (e.tags or [])]
+	return entries
+
+
+# ---- Chat skeleton ----
+
+@APP.post("/chat/send", response_model=ChatMsg)
+async def chat_send(req: ChatSend) -> ChatMsg:
+	ts = datetime.now(timezone.utc).isoformat()
+	msg = ChatMsg(role=req.role, text=req.text, ts=ts)
+	_append_jsonl(CHAT_FILE, msg.model_dump())
+	return msg
+
+
+@APP.get("/chat/thread", response_model=List[ChatMsg])
+async def chat_thread(tail: Optional[int] = Query(None, ge=1)) -> List[ChatMsg]:
+	msgs: List[ChatMsg] = []
+	if CHAT_FILE.exists():
+		for line in CHAT_FILE.read_text(encoding="utf-8").splitlines():
+			try:
+				obj = json.loads(line)
+				msgs.append(ChatMsg(**obj))
+			except Exception:
+				continue
+	if tail is not None:
+		msgs = msgs[-tail:]
+	return msgs
+
+
+# ---- Next item suggestion ----
+
+@APP.get("/task/next", response_model=NextSuggestion)
+async def task_next(item_type: str = Query("issue"), profile: str = Query("developer")) -> NextSuggestion:
+	assignment = load_assignment()
+	if not assignment or not assignment.project_id:
+		raise HTTPException(status_code=409, detail="No project selected. Run aida-task-select.")
+	project_id = int(assignment.project_id)
+	# Use developer profile to scope "assigned_to me" preference
+	dev_client = TaigaClient.from_profile(profile)
+	if not dev_client or not dev_client.get_me().get("id"):
+		raise HTTPException(status_code=409, detail=f"Profile '{profile}' is not authenticated. Run aida-taiga-auth --profile {profile} --activate")
+	dev_id = int(dev_client.get_me().get("id"))
+	client = TaigaClient.from_env()
+	if item_type != "issue":
+		raise HTTPException(status_code=400, detail="Only item_type=issue is supported for now.")
+	resp = client.get("/api/v1/issues", params={"project": project_id})
+	resp.raise_for_status()
+	issues = resp.json() if isinstance(resp.json(), list) else []
+	# Filter open (status_extra_info.is_closed == False)
+	open_issues = []
+	for it in issues:
+		sei = it.get("status_extra_info") or {}
+		if sei.get("is_closed"):
+			continue
+		open_issues.append(it)
+	if not open_issues:
+		raise HTTPException(status_code=404, detail="No open items found. Adjust Taiga or create work.")
+	# Prefer assigned to developer, then unassigned
+	prefer = [i for i in open_issues if (i.get("assigned_to") == dev_id)]
+	if not prefer:
+		prefer = [i for i in open_issues if (i.get("assigned_to") in (None, 0))]
+	# Simple sort by priority (lower first) then created_date
+	def score(it: dict) -> tuple:
+		return (int(it.get("priority") or 0), str(it.get("created_date") or ""))
+	prefer.sort(key=score)
+	candidate = prefer[0] if prefer else None
+	if not candidate:
+		raise HTTPException(status_code=404, detail="No suitable next item. Adjust assignment or status in Taiga.")
+	return NextSuggestion(
+		item_type="issue",
+		id=int(candidate.get("id")),
+		ref=candidate.get("ref"),
+		subject=candidate.get("subject"),
+		status=(candidate.get("status_extra_info") or {}).get("name"),
+		assigned_to=candidate.get("assigned_to"),
+		priority=candidate.get("priority"),
+	)
 
 
 @APP.get("/task/history", response_model=List[HistoryItem])

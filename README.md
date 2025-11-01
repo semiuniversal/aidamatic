@@ -39,7 +39,7 @@ More context: see `doc/aida_v2.md` for the product brief and developer guide.
 aida-start
 ```
 
-This wizard will bring up Taiga, prompt for credentials, bind your identity, create/select a Kanban project, and start the AIDA Bridge.
+This wizard will bring up Taiga, prompt for credentials (not stored), bind your identity, create/select a Kanban project, and start the AIDA Bridge in the background. It detects if services are already running and lets you abort.
 
 Control:
 - aida-stop: stops the bridge and Taiga stack
@@ -89,9 +89,9 @@ aida-taiga-up
 
 ## AIDA Bridge (local HTTP + CLI)
 
+The bridge is started automatically in the background by `aida-start` (port 8787). You can still call its APIs directly, and use the CLI wrappers for convenience.
+
 ```bash
-# Start the bridge on localhost:8787
-aida-bridge
 # Health
 curl -s http://127.0.0.1:8787/health
 # Projects (scoped)
@@ -108,6 +108,20 @@ curl -s 'http://127.0.0.1:8787/task/history'
 aida-sync
 # Or via HTTP (dry-run first)
 curl -s -X POST 'http://127.0.0.1:8787/sync/outbox?dry_run=true'
+
+# Docs inbox (local)
+# List docs
+aida-doc --list
+# Add a text note
+aida-doc --text "Design notes" --tag brief --name notes.md
+# Add a file
+aida-doc --file ./mockup.png --tag ui
+
+# Chat skeleton (local)
+# Send message
+aida-chat --send "Kick off grooming for Docs inbox"
+# Show thread (last 20)
+aida-chat --thread --tail 20
 ```
 
 ## Auth and API convenience
@@ -123,7 +137,7 @@ aida-taiga-api GET /api/v1/projects
 ## Project selection & listing
 
 ```bash
-# Identity-scoped, active-only listing (default)
+# Identity-scoped, active-only listing (default) with TYPE
 aida-projects-list
 
 # Include archived or filter by tag

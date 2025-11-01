@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -71,6 +72,31 @@ def main(argv: list[str] | None = None) -> int:
 		is_kanban=True,
 	)
 	print(f"Created project: {created.get('name')} ({created.get('slug')}) id={created.get('id')}")
+
+	# Add developer and scrum users as members if identities.json is present
+	try:
+		ident_path = os.path.join(os.getcwd(), ".aida", "identities.json")
+		if os.path.isfile(ident_path):
+			ident = json.load(open(ident_path, "r", encoding="utf-8"))
+			proj_id = int(created.get("id"))
+			roles = client.get_roles(proj_id) or []
+			role_id = None
+			for r in roles:
+				if (r.get("name") or "").lower() == "member":
+					role_id = int(r.get("id")); break
+			if role_id is None and roles:
+				role_id = int(roles[0].get("id"))
+			for key in ("developer", "scrum"):
+				u = (ident.get(key) or {}).get("username")
+				if not u or role_id is None:
+					continue
+				user = client.get_user_by_username(u)
+				if user:
+					client.create_membership(proj_id, int(user.get("id")), role_id)
+					print(f"Added {key} '{u}' to project {slug}")
+	except Exception:
+		pass
+
 	return 0
 
 

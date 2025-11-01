@@ -59,6 +59,20 @@ class TaigaClient:
 				raise RuntimeError("No auth found. Run aida-taiga-auth --refresh first.")
 		return cls(base_url=base_url, token=token)
 
+	@classmethod
+	def from_profile(cls, profile: str) -> "TaigaClient":
+		auth_path = os.path.join(os.getcwd(), ".aida", f"auth.{profile}.json")
+		if os.path.isfile(auth_path):
+			try:
+				with open(auth_path, "r", encoding="utf-8") as f:
+					data = json.load(f)
+					base_url = data.get("base_url") or DEFAULT_BASE_URL
+					token = data.get("token") or ""
+					return cls(base_url, token)
+			except Exception:
+				pass
+		return cls(DEFAULT_BASE_URL, "")
+
 	def _url(self, path: str) -> str:
 		if path.startswith("http://") or path.startswith("https://"):
 			return path
@@ -193,4 +207,22 @@ class TaigaClient:
 			if final.ok:
 				return final.json()
 		return created
+
+	def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+		resp = self.get("/api/v1/users", params={"username": username})
+		if not resp.ok:
+			return None
+		items = resp.json()
+		if isinstance(items, list) and items:
+			return items[0]
+		return None
+
+	def get_roles(self, project_id: int) -> List[Dict[str, Any]]:
+		resp = self.get("/api/v1/roles", params={"project": project_id})
+		return resp.json() if resp.ok else []
+
+	def create_membership(self, project_id: int, user_id: int, role_id: int) -> Dict[str, Any]:
+		resp = self.post("/api/v1/memberships", json={"project": project_id, "user": user_id, "role": role_id})
+		resp.raise_for_status()
+		return resp.json()
 

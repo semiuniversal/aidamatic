@@ -8,47 +8,59 @@ ENV_LOCAL_FILE="$ROOT_DIR/docker/.env.local"
 TOKEN_FILE="$ROOT_DIR/.taiga_token"
 AUTH_DIR="$ROOT_DIR/.aida"
 AUTH_FILE="$AUTH_DIR/auth.json"
+IDENT_FILE="$AUTH_DIR/identities.json"
 
 usage() {
 	cat <<USAGE
 Usage: 
-  $(basename "$0") [--refresh] [--switch-user] [--whoami]
+  $(basename "$0") [--refresh] [--switch-user] [--whoami] [--profile NAME] [--activate]
 
-Prompts for credentials if not supplied and binds identity in .aida/auth.json.
+Prompts for credentials if not supplied and binds identity in .aida/auth*.json.
+Profiles store to .aida/auth.<profile>.json and .taiga_token.<profile>.
 USAGE
 }
 
 REFRESH=0
 SWITCH=0
 WHOAMI=0
+PROFILE=""
+ACTIVATE=0
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--help) usage; exit 0;;
 		--refresh) REFRESH=1; shift;;
 		--switch-user) SWITCH=1; shift;;
 		--whoami) WHOAMI=1; shift;;
+		--profile) PROFILE="${2:-}"; shift 2;;
+		--activate) ACTIVATE=1; shift;;
 		*) shift;;
 	esac
 done
 
+if [[ -n "$PROFILE" ]]; then
+	TOKEN_FILE="$ROOT_DIR/.taiga_token.$PROFILE"
+fi
+
 if [[ $WHOAMI -eq 1 ]]; then
-	if [[ -f "$AUTH_FILE" ]]; then
-		cat "$AUTH_FILE"; exit 0
+	if [[ -n "$PROFILE" ]]; then
+		FILE="$AUTH_DIR/auth.$PROFILE.json"
 	else
-		echo "No bound identity (.aida/auth.json missing)" >&2; exit 1
+		FILE="$AUTH_FILE"
+	fi
+	if [[ -f "$FILE" ]]; then
+		cat "$FILE"; exit 0
+	else
+		echo "No bound identity ($FILE missing)" >&2; exit 1
 	fi
 fi
 
-# Preserve preexisting env
 PRE_BASE_URL="${TAIGA_BASE_URL:-}"
 PRE_USER="${TAIGA_ADMIN_USER:-}"
 PRE_PASS="${TAIGA_ADMIN_PASSWORD:-}"
 
-# Source optional env files
 if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
 if [[ -f "$ENV_LOCAL_FILE" ]]; then set -a; . "$ENV_LOCAL_FILE"; set +a; fi
 
-# Re-apply shell-provided values
 if [[ -n "$PRE_BASE_URL" ]]; then TAIGA_BASE_URL="$PRE_BASE_URL"; fi
 if [[ -n "$PRE_USER" ]]; then TAIGA_ADMIN_USER="$PRE_USER"; fi
 if [[ -n "$PRE_PASS" ]]; then TAIGA_ADMIN_PASSWORD="$PRE_PASS"; fi
@@ -57,7 +69,22 @@ if [[ -n "$PRE_PASS" ]]; then TAIGA_ADMIN_PASSWORD="$PRE_PASS"; fi
 TAIGA_ADMIN_USER="${TAIGA_ADMIN_USER:-}"
 TAIGA_ADMIN_PASSWORD="${TAIGA_ADMIN_PASSWORD:-}"
 
-# Interactive prompts if missing
+# If profile maps to identities.json, prefill
+if [[ -f "$IDENT_FILE" && -n "$PROFILE" ]]; then
+	case "$PROFILE" in
+		developer)
+			VALS="$($PYTHON_BIN -c 'import sys,json; d=json.load(open(sys.argv[1])); print((d.get("developer") or {}).get("username","")); print((d.get("developer") or {}).get("password",""))' "$IDENT_FILE" 2>/dev/null || true)"
+			TAIGA_ADMIN_USER="${TAIGA_ADMIN_USER:-$(printf '%s' "$VALS" | sed -n '1p')}"
+			TAIGA_ADMIN_PASSWORD="${TAIGA_ADMIN_PASSWORD:-$(printf '%s' "$VALS" | sed -n '2p')}"
+			;;
+		scrum)
+			VALS="$($PYTHON_BIN -c 'import sys,json; d=json.load(open(sys.argv[1])); print((d.get("scrum") or {}).get("username","")); print((d.get("scrum") or {}).get("password",""))' "$IDENT_FILE" 2>/dev/null || true)"
+			TAIGA_ADMIN_USER="${TAIGA_ADMIN_USER:-$(printf '%s' "$VALS" | sed -n '1p')}"
+			TAIGA_ADMIN_PASSWORD="${TAIGA_ADMIN_PASSWORD:-$(printf '%s' "$VALS" | sed -n '2p')}"
+			;;
+	esac
+fi
+
 if [[ -z "${TAIGA_ADMIN_USER}" ]]; then
 	read -r -p "Taiga username [admin]: " INPUT_USER || true
 	TAIGA_ADMIN_USER="${INPUT_USER:-admin}"
@@ -67,13 +94,15 @@ if [[ -z "${TAIGA_ADMIN_PASSWORD}" ]]; then
 	TAIGA_ADMIN_PASSWORD="${INPUT_PASS:-}"
 fi
 
-# Refresh handling
 if [[ $REFRESH -eq 1 && -f "$TOKEN_FILE" ]]; then rm -f "$TOKEN_FILE" || true; fi
-if [[ $REFRESH -eq 0 && -s "$TOKEN_FILE" && -f "$AUTH_FILE" ]]; then
-	cat "$TOKEN_FILE"; exit 0
+if [[ $REFRESH -eq 0 && -s "$TOKEN_FILE" ]]; then
+	if [[ -n "$PROFILE" ]]; then
+		cat "$TOKEN_FILE"; exit 0
+	elif [[ -f "$AUTH_FILE" ]]; then
+		cat "$TOKEN_FILE"; exit 0
+	fi
 fi
 
-# Authenticate
 RESP=$(curl -sS "$TAIGA_BASE_URL/api/v1/auth" -H 'Content-Type: application/json' -d "{\"type\":\"normal\",\"username\":\"$TAIGA_ADMIN_USER\",\"password\":\"$TAIGA_ADMIN_PASSWORD\"}")
 
 PYTHON_BIN="$(command -v python3 || true)"; [[ -z "$PYTHON_BIN" ]] && PYTHON_BIN="$(command -v python || true)"
@@ -87,7 +116,6 @@ fi
 [[ -z "$TOKEN" ]] && TOKEN="$(printf '%s' "$RESP" | sed -n 's/.*"auth_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 [[ -z "$TOKEN" ]] && { echo "Failed to obtain token. Response was:" >&2; echo "$RESP" >&2; exit 3; }
 
-# Resolve identity
 ME=$(curl -sS "$TAIGA_BASE_URL/api/v1/users/me" -H "Authorization: Bearer $TOKEN") || true
 USER_ID=""; USER_NAME=""; USER_EMAIL=""
 if [[ -n "$PYTHON_BIN" ]]; then
@@ -100,12 +128,37 @@ fi
 [[ -z "$USER_ID" ]] && { echo "Failed to resolve identity from /users/me" >&2; exit 4; }
 
 mkdir -p "$AUTH_DIR"
-if [[ -f "$AUTH_FILE" && $SWITCH -ne 1 ]]; then
+
+# Switching guard only applies to default auth.json
+if [[ -z "$PROFILE" && -f "$AUTH_FILE" && $SWITCH -ne 1 ]]; then
 	OLD_ID=$(sed -n 's/.*"user_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$AUTH_FILE" | head -n1 || true)
 	if [[ -n "$OLD_ID" && "$OLD_ID" != "$USER_ID" ]]; then
 		echo "Refusing to switch identity (bound user_id=$OLD_ID, new user_id=$USER_ID). Pass --switch-user to override." >&2
 		exit 5
 	fi
+fi
+
+# Persist token and auth files
+if [[ -n "$PROFILE" ]]; then
+	PROFILE_AUTH="$AUTH_DIR/auth.$PROFILE.json"
+	echo -n "$TOKEN" > "$ROOT_DIR/.taiga_token.$PROFILE"; chmod 600 "$ROOT_DIR/.taiga_token.$PROFILE" || true
+	TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+	cat > "$PROFILE_AUTH" <<JSON
+{
+  "base_url": "$TAIGA_BASE_URL",
+  "user_id": $USER_ID,
+  "username": "$USER_NAME",
+  "email": "$USER_EMAIL",
+  "token": "$TOKEN",
+  "created_at": "$TS"
+}
+JSON
+	chmod 600 "$PROFILE_AUTH" || true
+	if [[ $ACTIVATE -eq 1 ]]; then
+		cp "$PROFILE_AUTH" "$AUTH_FILE"
+	fi
+	printf "%s" "$TOKEN"
+	exit 0
 fi
 
 echo -n "$TOKEN" > "$TOKEN_FILE"; chmod 600 "$TOKEN_FILE" || true

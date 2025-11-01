@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/docker/docker-compose.yml"
 ENV_FILE="$ROOT_DIR/docker/.env"
+AUTH_DIR="$ROOT_DIR/.aida"
+IDENT_FILE="$AUTH_DIR/identities.json"
 
 ADMIN_USER="${ADMIN_USER:-}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
@@ -54,6 +56,48 @@ if [[ $RC -ne 0 ]]; then
 	echo "Failed to create admin user" >&2
 	exit $RC
 fi
+
+# Generate non-human users (developer, scrum) with random passwords
+mkdir -p "$AUTH_DIR"
+PYBIN="$(command -v python3 || true)"; [[ -z "$PYBIN" ]] && PYBIN="$(command -v python || true)"
+GEN_DEV_PASS="$($PYBIN - <<'PY'
+import secrets
+print(secrets.token_urlsafe(24))
+PY
+)"
+GEN_SCRUM_PASS="$($PYBIN - <<'PY'
+import secrets
+print(secrets.token_urlsafe(24))
+PY
+)"
+DEV_USER="developer"
+DEV_EMAIL="developer@local"
+SCRUM_USER="scrum"
+SCRUM_EMAIL="scrum@local"
+
+# Create users in Taiga
+set +e
+docker compose -f "$COMPOSE_FILE" exec -T taiga-back sh -lc \
+	"DEV_USER='$DEV_USER' DEV_EMAIL='$DEV_EMAIL' DEV_PASS='$GEN_DEV_PASS' SCRUM_USER='$SCRUM_USER' SCRUM_EMAIL='$SCRUM_EMAIL' SCRUM_PASS='$GEN_SCRUM_PASS' /opt/venv/bin/python manage.py shell -c \"from django.contrib.auth import get_user_model; import os; U=get_user_model(); 
+for key in [('DEV_USER','DEV_EMAIL','DEV_PASS'), ('SCRUM_USER','SCRUM_EMAIL','SCRUM_PASS')]:
+    u=os.environ[key[0]]; e=os.environ[key[1]]; p=os.environ[key[2]]
+    print('creating user', u, e)
+    obj, created = U.objects.get_or_create(username=u, defaults={'email': e})
+    if created:
+        obj.set_password(p); obj.is_active=True; obj.save()
+    else:
+        obj.email=e; obj.is_active=True; obj.set_password(p); obj.save()
+\""
+set -e
+
+# Persist identities locally
+cat > "$IDENT_FILE" <<JSON
+{
+  "developer": { "username": "$DEV_USER", "email": "$DEV_EMAIL", "password": "$GEN_DEV_PASS" },
+  "scrum": { "username": "$SCRUM_USER", "email": "$SCRUM_EMAIL", "password": "$GEN_SCRUM_PASS" }
+}
+JSON
+chmod 600 "$IDENT_FILE" || true
 
 # Echo URLs (avoid duplicating port)
 set -a; . "$ENV_FILE"; set +a

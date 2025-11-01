@@ -24,7 +24,8 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 set -a; . "$ENV_FILE"; set +a
 SCHEME="${TAIGA_SITES_SCHEME:-http}"
 HOST="${TAIGA_SITES_DOMAIN:-localhost}"
-PORT="${TAIGA_HTTP_PORT:-9000}"
+FRONT_URL="${TAIGA_FRONTEND_URL:-${SCHEME}://${HOST}}"
+API_URL="${TAIGA_BACKEND_URL:-${SCHEME}://${HOST}/api/v1/}"
 
-echo "Taiga UI:   ${SCHEME}://${HOST}:${PORT}"
-echo "Taiga API:  ${SCHEME}://${HOST}:${PORT}/api/v1/"
+echo "Taiga UI:   ${FRONT_URL}"
+echo "Taiga API:  ${API_URL}"
