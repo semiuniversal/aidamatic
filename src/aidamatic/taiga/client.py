@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+import json
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -9,14 +10,14 @@ import requests
 DEFAULT_BASE_URL = "http://localhost:9000"
 ENV_TOKEN = "TAIGA_TOKEN"
 ENV_BASE = "TAIGA_BASE_URL"
+AUTH_FILE = os.path.join(os.getcwd(), ".aida", "auth.json")
 
 
 class TaigaClient:
 	"""Minimal Taiga API client with token auth and basic helpers.
 
 	This client targets the Taiga v1 REST API used by local instances.
-	It prefers the TAIGA_TOKEN environment variable. If absent, it will
-	attempt to invoke `scripts/taiga-auth.sh` to obtain a token.
+	It prefers .aida/auth.json; then TAIGA_TOKEN; then `scripts/taiga-auth.sh`.
 	"""
 
 	def __init__(self, base_url: str, token: str, timeout_s: float = 15.0) -> None:
@@ -31,10 +32,22 @@ class TaigaClient:
 
 	@classmethod
 	def from_env(cls) -> "TaigaClient":
+		# 1) auth.json
+		if os.path.isfile(AUTH_FILE):
+			try:
+				with open(AUTH_FILE, "r", encoding="utf-8") as f:
+					data = json.load(f)
+					base_url = data.get("base_url") or DEFAULT_BASE_URL
+					token = data.get("token") or ""
+					if token:
+						return cls(base_url=base_url, token=token)
+			except Exception:
+				pass
+		# 2) env
 		base_url = os.environ.get(ENV_BASE, DEFAULT_BASE_URL)
 		token = os.environ.get(ENV_TOKEN)
 		if not token:
-			# Attempt to fetch via local script for dev convenience
+			# 3) Attempt to fetch via local script for dev convenience
 			script_path = os.path.join(os.getcwd(), "scripts", "taiga-auth.sh")
 			if os.path.isfile(script_path) and os.access(script_path, os.X_OK):
 				try:
@@ -43,7 +56,7 @@ class TaigaClient:
 				except Exception as exc:
 					raise RuntimeError("Failed to obtain TAIGA_TOKEN via taiga-auth.sh") from exc
 			else:
-				raise RuntimeError("TAIGA_TOKEN is not set and scripts/taiga-auth.sh is not available")
+				raise RuntimeError("No auth found. Run aida-taiga-auth --refresh first.")
 		return cls(base_url=base_url, token=token)
 
 	def _url(self, path: str) -> str:
@@ -158,3 +171,4 @@ class TaigaClient:
 		resp = self.post("/api/v1/projects", json=payload)
 		resp.raise_for_status()
 		return resp.json()
+
