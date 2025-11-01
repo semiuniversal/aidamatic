@@ -154,6 +154,31 @@ if [[ -n "$PROFILE" ]]; then
 }
 JSON
 	chmod 600 "$PROFILE_AUTH" || true
+	# Update identities.json (store only username/email; preserve existing password if any)
+	if [[ -n "$PYTHON_BIN" ]]; then
+		$PYTHON_BIN - "$IDENT_FILE" "$PROFILE" "$USER_NAME" "$USER_EMAIL" <<'PY'
+import sys, json, os
+path, profile, uname, email = sys.argv[1:5]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+node = data.get(profile) or {}
+if uname:
+    node["username"] = uname
+if email:
+    node["email"] = email
+# preserve any existing password
+if profile not in data or not isinstance(data.get(profile), dict):
+    data[profile] = {}
+data[profile].update(node)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+PY
+	fi
 	if [[ $ACTIVATE -eq 1 ]]; then
 		cp "$PROFILE_AUTH" "$AUTH_FILE"
 	fi

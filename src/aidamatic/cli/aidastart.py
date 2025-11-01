@@ -134,9 +134,7 @@ def start_bridge_background() -> None:
 def main() -> int:
 	print("AIDA setup wizard\n")
 	if system_running():
-		if not prompt_yes_no("Taiga appears to be running. Continue anyway?", default_yes=False):
-			print("Aborted.")
-			return 0
+		print("Taiga appears to be running. Continuing without reset...")
 
 	ensure_env_with_port()
 	ensure_status_map()
@@ -145,45 +143,10 @@ def main() -> int:
 	admin_email: Optional[str] = None
 	admin_pass: Optional[str] = None
 
-	reset = prompt_yes_no("Do you want a clean install/reset (recommended)?", default_yes=True)
-	if reset:
-		admin_user = input("Admin username [admin]: ").strip() or "admin"
-		admin_email = input(f"Admin email [{admin_user}@localhost]: ").strip() or f"{admin_user}@localhost"
-		admin_pass = getpass.getpass(f"Admin password for {admin_user}: ")
-		cmd = [
-			"aida-taiga-reset",
-			"--admin-user",
-			admin_user,
-			"--admin-email",
-			admin_email,
-			"--admin-pass",
-			admin_pass,
-		]
-		print("\nBringing up Taiga (this can take a moment)...")
-		run(cmd)
-		# Bind profiles from identities.json (developer, scrum)
-		ident_path = Path.cwd() / ".aida" / "identities.json"
-		if ident_path.exists():
-			try:
-				ident = json.loads(ident_path.read_text())
-				dev_user = (ident.get("developer") or {}).get("username")
-				dev_pass = (ident.get("developer") or {}).get("password")
-				if dev_user and dev_pass:
-					os.environ["TAIGA_ADMIN_USER"] = dev_user
-					os.environ["TAIGA_ADMIN_PASSWORD"] = dev_pass
-					run(["aida-taiga-auth", "--profile", "developer", "--activate", "--refresh", "--switch-user"])  # sets default auth.json to developer
-				scrum_user = (ident.get("scrum") or {}).get("username")
-				scrum_pass = (ident.get("scrum") or {}).get("password")
-				if scrum_user and scrum_pass:
-					os.environ["TAIGA_ADMIN_USER"] = scrum_user
-					os.environ["TAIGA_ADMIN_PASSWORD"] = scrum_pass
-					run(["aida-taiga-auth", "--profile", "scrum", "--refresh", "--switch-user"])  # do not activate
-			except Exception:
-				pass
-	else:
-		print("\nStarting existing Taiga stack...")
+	# Safe start: never prompt to reset here; use `aida-setup --reset` instead
+	if not system_running():
+		print("\nStarting Taiga stack...")
 		run(["aida-taiga-up"])  # prints URLs
-		# Wait for Taiga gateway and API to be ready before auth
 		try:
 			wait_timeout = os.environ.get("AIDA_TAIGA_WAIT", "180")
 			run(["aida-taiga-wait", "--timeout", wait_timeout])
@@ -195,25 +158,58 @@ def main() -> int:
 		os.environ["TAIGA_ADMIN_USER"] = admin_user
 		os.environ["TAIGA_ADMIN_PASSWORD"] = admin_pass
 
-	print("\nAuthenticating to Taiga...")
+	# Seed developer profile from default auth/token if present (non-destructive)
 	try:
-		run(["aida-taiga-auth", "--refresh", "--switch-user"])
-	except subprocess.CalledProcessError:
-		print("Auth failed. Let's try with explicit credentials.")
-		user = input("Username [admin]: ").strip() or "admin"
-		pw = getpass.getpass(f"Password for {user}: ")
-		os.environ["TAIGA_ADMIN_USER"] = user
-		os.environ["TAIGA_ADMIN_PASSWORD"] = pw
-		run(["aida-taiga-auth", "--refresh", "--switch-user"])
+		base = Path.cwd() / ".aida"
+		base.mkdir(parents=True, exist_ok=True)
+		default_auth = base / "auth.json"
+		dev_auth = base / "auth.developer.json"
+		if default_auth.exists() and not dev_auth.exists():
+			dev_auth.write_text(default_auth.read_text())
+			root = Path.cwd()
+			tkn = root / ".taiga_token"
+			dev_tkn = root / ".taiga_token.developer"
+			if tkn.exists() and not dev_tkn.exists():
+				dev_tkn.write_text(tkn.read_text())
+			# update identities.json with username/email
+			try:
+				data = json.loads(default_auth.read_text() or "{}")
+				ident_path = base / "identities.json"
+				ident = {}
+				if ident_path.exists():
+					ident = json.loads(ident_path.read_text() or "{}")
+				dev = ident.get("developer") or {}
+				if data.get("username"): dev["username"] = data.get("username")
+				if data.get("email"): dev["email"] = data.get("email")
+				ident["developer"] = dev
+				ident_path.write_text(json.dumps(ident, indent=2))
+			except Exception:
+				pass
+	except Exception:
+		pass
 
-	if prompt_yes_no("Create a new Kanban project for this folder?", default_yes=True):
-		folder = Path.cwd().name
-		default_name = folder
-		name = input(f"Project name [{default_name}]: ").strip() or default_name
-		slug = input(f"Project slug [{folder.lower()}]: ").strip() or folder.lower()
-		print("\nCreating project...")
-		run(["aida-setup-kanban", "--name", name, "--slug", slug])
-		run(["aida-task-select", "--slug", slug])
+	print("\nAuthenticating to Taiga (cached profiles)...")
+	try:
+		ident_path = Path.cwd() / ".aida" / "identities.json"
+		if ident_path.exists():
+			ident = json.loads(ident_path.read_text())
+			dev_user = (ident.get("developer") or {}).get("username")
+			dev_pass = (ident.get("developer") or {}).get("password")
+			if dev_user and dev_pass:
+				os.environ["TAIGA_ADMIN_USER"] = dev_user
+				os.environ["TAIGA_ADMIN_PASSWORD"] = dev_pass
+				run(["aida-taiga-auth", "--profile", "developer", "--activate", "--switch-user"])  # activate developer
+			scr_user = (ident.get("scrum") or {}).get("username")
+			scr_pass = (ident.get("scrum") or {}).get("password")
+			if scr_user and scr_pass:
+				os.environ["TAIGA_ADMIN_USER"] = scr_user
+				os.environ["TAIGA_ADMIN_PASSWORD"] = scr_pass
+				run(["aida-taiga-auth", "--profile", "scrum", "--switch-user"])  # background profile
+		else:
+			print("No cached identities found. Run: aida-setup --init")
+	except subprocess.CalledProcessError:
+		print("Authentication failed using cached identities. Run: aida-setup --init")
+
 
 	print("Starting AIDA Bridge on http://127.0.0.1:8787 ...")
 	# Ensure Bridge uses scrum profile by default for sync
