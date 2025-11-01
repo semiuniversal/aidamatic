@@ -33,6 +33,19 @@ More context: see `doc/aida_v2.md` for the product brief and developer guide.
 - Windows: supported via WSL2 only. Use Docker Desktop with WSL integration enabled and run all commands from a WSL shell.
 - Native Windows shells (PowerShell/CMD) are not supported for the scripts/CLIs in this repo.
 
+## Quick start
+
+```bash
+aida-start
+```
+
+This wizard will bring up Taiga, prompt for credentials, bind your identity, create/select a Kanban project, and start the AIDA Bridge.
+
+Control:
+- aida-stop: stops the bridge and Taiga stack
+- aida-restart: stop then run the wizard again
+
+
 ## Setup
 
 1. Create and activate a virtual environment

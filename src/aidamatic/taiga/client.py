@@ -71,6 +71,10 @@ class TaigaClient:
 		headers = {"Content-Type": "application/json"}
 		return self.session.post(self._url(path), json=json or {}, headers=headers, timeout=self.timeout_s)
 
+	def put(self, path: str, json: Optional[Dict[str, Any]] = None) -> requests.Response:
+		headers = {"Content-Type": "application/json"}
+		return self.session.put(self._url(path), json=json or {}, headers=headers, timeout=self.timeout_s)
+
 	def patch(self, path: str, json: Optional[Dict[str, Any]] = None) -> requests.Response:
 		headers = {"Content-Type": "application/json"}
 		return self.session.patch(self._url(path), json=json or {}, headers=headers, timeout=self.timeout_s)
@@ -160,7 +164,7 @@ class TaigaClient:
 		resp = self.get("/api/v1/userstory-statuses", params={"project": project_id})
 		return resp.json() if resp.ok else []
 
-	def create_project(self, name: str, slug: Optional[str] = None, is_private: bool = True, description: str = "") -> Dict[str, Any]:
+	def create_project(self, name: str, slug: Optional[str] = None, is_private: bool = True, description: str = "", is_kanban: bool = True) -> Dict[str, Any]:
 		payload: Dict[str, Any] = {
 			"name": name,
 			"is_private": is_private,
@@ -170,5 +174,23 @@ class TaigaClient:
 			payload["slug"] = slug
 		resp = self.post("/api/v1/projects", json=payload)
 		resp.raise_for_status()
-		return resp.json()
+		created = resp.json()
+		# Enforce Kanban via PATCH/PUT, then confirm via GET
+		if is_kanban and isinstance(created, dict) and created.get("id"):
+			proj_id = int(created["id"])  # type: ignore[index]
+			payload: Dict[str, Any] = {
+				"methodology": "kanban",
+				"is_kanban_activated": True,
+				"is_backlog_activated": False,
+			}
+			# Try PATCH first
+			patched = self.patch(f"/api/v1/projects/{proj_id}", json=payload)
+			if not patched.ok:
+				# Fallback to PUT if PATCH not allowed/ignored
+				self.put(f"/api/v1/projects/{proj_id}", json=payload)
+			# Fetch the latest project state
+			final = self.get(f"/api/v1/projects/{proj_id}")
+			if final.ok:
+				return final.json()
+		return created
 

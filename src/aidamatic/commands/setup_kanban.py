@@ -63,7 +63,13 @@ def main(argv: list[str] | None = None) -> int:
 	if existing:
 		print(f"Project already exists: {existing.get('name')} ({existing.get('slug')}) id={existing.get('id')}")
 		return 0
-	created = client.create_project(name=name, slug=slug, is_private=is_private, description=f"Project for folder {os.path.basename(os.getcwd())}")
+	created = client.create_project(
+		name=name,
+		slug=slug,
+		is_private=is_private,
+		description=f"Project for folder {os.path.basename(os.getcwd())}",
+		is_kanban=True,
+	)
 	print(f"Created project: {created.get('name')} ({created.get('slug')}) id={created.get('id')}")
 	return 0
 

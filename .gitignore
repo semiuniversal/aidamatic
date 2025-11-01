@@ -4,6 +4,9 @@ memory-bank/
 .venv/
 # Local environment files
 .env
+# Optional local overrides for Docker env (never commit)
+docker/.env.local
+*.env.bak*
 
 # Token cache for dev scripts
 .taiga_token

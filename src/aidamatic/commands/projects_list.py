@@ -26,9 +26,12 @@ def main(argv: list[str] | None = None) -> int:
 		return 0
 	# table
 	rows: List[str] = []
-	rows.append("ID\tSLUG\tNAME\tARCHIVED")
+	rows.append("ID\tSLUG\tNAME\tTYPE\tARCHIVED")
 	for p in projects:
-		rows.append(f"{p.get('id')}\t{p.get('slug')}\t{p.get('name')}\t{p.get('is_archived')}")
+		meth = p.get("methodology")
+		if not meth:
+			meth = "kanban" if p.get("is_kanban_activated") else "scrum"
+		rows.append(f"{p.get('id')}\t{p.get('slug')}\t{p.get('name')}\t{str(meth).upper()}\t{p.get('is_archived')}")
 	print("\n".join(rows))
 	return 0
 

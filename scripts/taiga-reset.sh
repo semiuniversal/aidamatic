@@ -14,38 +14,23 @@ CLEAN_ARGS=()
 # Parse CLI flags
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-		--admin-pass)
-			ADMIN_PASS="${2:-}"; shift 2;;
-		--admin-user)
-			ADMIN_USER="${2:-}"; shift 2;;
-		--admin-email)
-			ADMIN_EMAIL="${2:-}"; shift 2;;
-		--purge-local)
-			CLEAN_ARGS+=("--purge-local"); shift;;
-		*)
-			# ignore unknown for now
-			shift;;
+		--admin-pass) ADMIN_PASS="${2:-}"; shift 2;;
+		--admin-user) ADMIN_USER="${2:-}"; shift 2;;
+		--admin-email) ADMIN_EMAIL="${2:-}"; shift 2;;
+		--purge-local) CLEAN_ARGS+=("--purge-local"); shift;;
+		*) shift;;
 	esac
 done
 
-if [[ -z "$ADMIN_USER" ]]; then
-	ADMIN_USER=$(git config --global user.name || true)
-fi
-if [[ -z "$ADMIN_USER" ]]; then
-	ADMIN_USER=$(id -un 2>/dev/null || whoami 2>/dev/null || echo admin)
-fi
+if [[ -z "$ADMIN_USER" ]]; then ADMIN_USER=$(git config --global user.name || true); fi
+if [[ -z "$ADMIN_USER" ]]; then ADMIN_USER=$(id -un 2>/dev/null || whoami 2>/dev/null || echo admin); fi
+if [[ -z "$ADMIN_EMAIL" ]]; then ADMIN_EMAIL=$(git config --global user.email || true); fi
+if [[ -z "$ADMIN_EMAIL" ]]; then host=$(hostname -f 2>/dev/null || hostname); ADMIN_EMAIL="${ADMIN_USER}@${host}"; fi
 
-if [[ -z "$ADMIN_EMAIL" ]]; then
-	ADMIN_EMAIL=$(git config --global user.email || true)
-fi
-if [[ -z "$ADMIN_EMAIL" ]]; then
-	host=$(hostname -f 2>/dev/null || hostname)
-	ADMIN_EMAIL="${ADMIN_USER}@${host}"
-fi
-
+# Prompt for password if missing (no storage anywhere)
 if [[ -z "$ADMIN_PASS" ]]; then
-	echo "ADMIN_PASS is required (pass --admin-pass or export ADMIN_PASS)." >&2
-	exit 2
+	read -rs -p "Set admin password for ${ADMIN_USER}: " INPUT_PASS || true; echo
+	ADMIN_PASS="${INPUT_PASS:-}"
 fi
 
 "$SCRIPT_DIR/taiga-clean.sh" --force ${CLEAN_ARGS[*]:-}
@@ -59,15 +44,6 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 
 "$SCRIPT_DIR/taiga-wait.sh" --timeout 240
 
-# Echo URLs for convenience
-# shellcheck disable=SC2046
-set -a; . "$ENV_FILE"; set +a
-SCHEME="${TAIGA_SITES_SCHEME:-http}"
-HOST="${TAIGA_SITES_DOMAIN:-localhost}"
-PORT="${TAIGA_HTTP_PORT:-9000}"
-echo "Taiga UI:   ${SCHEME}://${HOST}:${PORT}"
-echo "Taiga API:  ${SCHEME}://${HOST}:${PORT}/api/v1/"
-
 set +e
 docker compose -f "$COMPOSE_FILE" exec -T \
 	taiga-back sh -lc \
@@ -78,5 +54,13 @@ if [[ $RC -ne 0 ]]; then
 	echo "Failed to create admin user" >&2
 	exit $RC
 fi
+
+# Echo URLs (avoid duplicating port)
+set -a; . "$ENV_FILE"; set +a
+SCHEME="${TAIGA_SITES_SCHEME:-http}"; HOST="${TAIGA_SITES_DOMAIN:-localhost}"
+FRONT_URL="${TAIGA_FRONTEND_URL:-${SCHEME}://${HOST}}"
+API_URL="${TAIGA_BACKEND_URL:-${SCHEME}://${HOST}/api/v1/}"
+echo "Taiga UI:   ${FRONT_URL}"
+echo "Taiga API:  ${API_URL}"
 
 echo "Admin ready: $ADMIN_USER <$ADMIN_EMAIL>"

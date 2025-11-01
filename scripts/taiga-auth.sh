@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$ROOT_DIR/docker/.env"
+ENV_LOCAL_FILE="$ROOT_DIR/docker/.env.local"
 TOKEN_FILE="$ROOT_DIR/.taiga_token"
 AUTH_DIR="$ROOT_DIR/.aida"
 AUTH_FILE="$AUTH_DIR/auth.json"
@@ -13,14 +14,7 @@ usage() {
 Usage: 
   $(basename "$0") [--refresh] [--switch-user] [--whoami]
 
-Reads TAIGA_BASE_URL, TAIGA_ADMIN_USER, TAIGA_ADMIN_PASSWORD from docker/.env,
-requests an auth token from Taiga, caches it to .taiga_token and binds identity
-in .aida/auth.json (base_url, user_id, username, email, token).
-
-Options:
-  --refresh       Force re-auth (removes cached token before fetching)
-  --switch-user   Allow overwriting .aida/auth.json if identity differs
-  --whoami        Print bound identity from .aida/auth.json and exit
+Prompts for credentials if not supplied and binds identity in .aida/auth.json.
 USAGE
 }
 
@@ -39,101 +33,73 @@ done
 
 if [[ $WHOAMI -eq 1 ]]; then
 	if [[ -f "$AUTH_FILE" ]]; then
-		cat "$AUTH_FILE"
-		exit 0
+		cat "$AUTH_FILE"; exit 0
 	else
-		echo "No bound identity (.aida/auth.json missing)" >&2
-		exit 1
+		echo "No bound identity (.aida/auth.json missing)" >&2; exit 1
 	fi
 fi
 
-if [[ ! -f "$ENV_FILE" ]]; then
-	echo "Missing $ENV_FILE. Copy docker/env.example to docker/.env and set admin creds." >&2
-	exit 1
-fi
+# Preserve preexisting env
+PRE_BASE_URL="${TAIGA_BASE_URL:-}"
+PRE_USER="${TAIGA_ADMIN_USER:-}"
+PRE_PASS="${TAIGA_ADMIN_PASSWORD:-}"
 
-# shellcheck disable=SC2046
-set -a; . "$ENV_FILE"; set +a
+# Source optional env files
+if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+if [[ -f "$ENV_LOCAL_FILE" ]]; then set -a; . "$ENV_LOCAL_FILE"; set +a; fi
+
+# Re-apply shell-provided values
+if [[ -n "$PRE_BASE_URL" ]]; then TAIGA_BASE_URL="$PRE_BASE_URL"; fi
+if [[ -n "$PRE_USER" ]]; then TAIGA_ADMIN_USER="$PRE_USER"; fi
+if [[ -n "$PRE_PASS" ]]; then TAIGA_ADMIN_PASSWORD="$PRE_PASS"; fi
 
 : "${TAIGA_BASE_URL:=http://localhost:9000}"
-: "${TAIGA_ADMIN_USER:=admin}"
-: "${TAIGA_ADMIN_PASSWORD:=}"
+TAIGA_ADMIN_USER="${TAIGA_ADMIN_USER:-}"
+TAIGA_ADMIN_PASSWORD="${TAIGA_ADMIN_PASSWORD:-}"
 
-if [[ -z "$TAIGA_ADMIN_PASSWORD" ]]; then
-	echo "TAIGA_ADMIN_PASSWORD is not set in $ENV_FILE" >&2
-	exit 2
+# Interactive prompts if missing
+if [[ -z "${TAIGA_ADMIN_USER}" ]]; then
+	read -r -p "Taiga username [admin]: " INPUT_USER || true
+	TAIGA_ADMIN_USER="${INPUT_USER:-admin}"
+fi
+if [[ -z "${TAIGA_ADMIN_PASSWORD}" ]]; then
+	read -rs -p "Taiga password for ${TAIGA_ADMIN_USER}: " INPUT_PASS || true; echo
+	TAIGA_ADMIN_PASSWORD="${INPUT_PASS:-}"
 fi
 
-# If refresh requested, remove cached token first to avoid confusion
-if [[ $REFRESH -eq 1 && -f "$TOKEN_FILE" ]]; then
-	rm -f "$TOKEN_FILE" || true
-fi
-
-if [[ $REFRESH -eq 0 && -s "$TOKEN_FILE" ]]; then
-	# Ensure token corresponds to the same identity; if auth file exists, just print token
-	if [[ -f "$AUTH_FILE" ]]; then
-		cat "$TOKEN_FILE"
-		exit 0
-	fi
+# Refresh handling
+if [[ $REFRESH -eq 1 && -f "$TOKEN_FILE" ]]; then rm -f "$TOKEN_FILE" || true; fi
+if [[ $REFRESH -eq 0 && -s "$TOKEN_FILE" && -f "$AUTH_FILE" ]]; then
+	cat "$TOKEN_FILE"; exit 0
 fi
 
 # Authenticate
-RESP=$(curl -sS "$TAIGA_BASE_URL/api/v1/auth" \
-	-H 'Content-Type: application/json' \
-	-d "{\"type\":\"normal\",\"username\":\"$TAIGA_ADMIN_USER\",\"password\":\"$TAIGA_ADMIN_PASSWORD\"}")
+RESP=$(curl -sS "$TAIGA_BASE_URL/api/v1/auth" -H 'Content-Type: application/json' -d "{\"type\":\"normal\",\"username\":\"$TAIGA_ADMIN_USER\",\"password\":\"$TAIGA_ADMIN_PASSWORD\"}")
 
-# Prefer python3/python to parse JSON from stdin; fallback to sed if unavailable.
-PYTHON_BIN="$(command -v python3 || true)"
-if [[ -z "$PYTHON_BIN" ]]; then
-	PYTHON_BIN="$(command -v python || true)"
-fi
-
+PYTHON_BIN="$(command -v python3 || true)"; [[ -z "$PYTHON_BIN" ]] && PYTHON_BIN="$(command -v python || true)"
 TOKEN=""
 if [[ -n "$PYTHON_BIN" ]]; then
-	TOKEN="$($PYTHON_BIN -c 'import sys, json; 
+	TOKEN="$($PYTHON_BIN -c 'import sys,json; 
 try:
-	data = json.loads(sys.stdin.read()); 
-	print(data.get("auth_token", ""))
-except Exception:
-	print("")' <<< "$RESP")"
+	data=json.loads(sys.stdin.read()); print(data.get("auth_token",""))
+except Exception: print("")' <<< "$RESP")"
 fi
+[[ -z "$TOKEN" ]] && TOKEN="$(printf '%s' "$RESP" | sed -n 's/.*"auth_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+[[ -z "$TOKEN" ]] && { echo "Failed to obtain token. Response was:" >&2; echo "$RESP" >&2; exit 3; }
 
-if [[ -z "$TOKEN" ]]; then
-	TOKEN="$(printf '%s' "$RESP" | sed -n 's/.*"auth_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-fi
-
-if [[ -z "$TOKEN" ]]; then
-	echo "Failed to obtain token. Response was:" >&2
-	echo "$RESP" >&2
-	exit 3
-fi
-
-# Resolve identity via /users/me
+# Resolve identity
 ME=$(curl -sS "$TAIGA_BASE_URL/api/v1/users/me" -H "Authorization: Bearer $TOKEN") || true
-USER_ID=""
-USER_NAME=""
-USER_EMAIL=""
+USER_ID=""; USER_NAME=""; USER_EMAIL=""
 if [[ -n "$PYTHON_BIN" ]]; then
 	readarray -t FIELDS < <($PYTHON_BIN -c 'import sys,json; 
 try:
-	d=json.loads(sys.stdin.read());
-	print(d.get("id","")); print(d.get("username","")); print(d.get("email",""))
-except Exception:
-	print(""); print(""); print("")
-') <<< "$ME")
-	USER_ID="${FIELDS[0]}"
-	USER_NAME="${FIELDS[1]}"
-	USER_EMAIL="${FIELDS[2]}"
+	d=json.loads(sys.stdin.read()); print(d.get("id","")); print(d.get("username","")); print(d.get("email",""))
+except Exception: print(""); print(""); print("")' <<< "$ME")
+	USER_ID="${FIELDS[0]}"; USER_NAME="${FIELDS[1]}"; USER_EMAIL="${FIELDS[2]}"
 fi
-
-if [[ -z "$USER_ID" ]]; then
-	echo "Failed to resolve identity from /users/me" >&2
-	exit 4
-fi
+[[ -z "$USER_ID" ]] && { echo "Failed to resolve identity from /users/me" >&2; exit 4; }
 
 mkdir -p "$AUTH_DIR"
-
-# If existing auth bound to another user and no --switch-user, refuse
 if [[ -f "$AUTH_FILE" && $SWITCH -ne 1 ]]; then
 	OLD_ID=$(sed -n 's/.*"user_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$AUTH_FILE" | head -n1 || true)
 	if [[ -n "$OLD_ID" && "$OLD_ID" != "$USER_ID" ]]; then
@@ -142,11 +108,7 @@ if [[ -f "$AUTH_FILE" && $SWITCH -ne 1 ]]; then
 	fi
 fi
 
-# Write token cache
-echo -n "$TOKEN" > "$TOKEN_FILE"
-chmod 600 "$TOKEN_FILE" || true
-
-# Write auth.json (bind identity)
+echo -n "$TOKEN" > "$TOKEN_FILE"; chmod 600 "$TOKEN_FILE" || true
 TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 cat > "$AUTH_FILE" <<JSON
 {
@@ -160,6 +122,5 @@ cat > "$AUTH_FILE" <<JSON
 JSON
 chmod 600 "$AUTH_FILE" || true
 
-# Print token (for callers expecting stdout)
 echo "$TOKEN"
 
