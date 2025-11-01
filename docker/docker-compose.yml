@@ -70,7 +70,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - taiga-media:/taiga/media
+      - taiga-media:/taiga-back/media
       - taiga-static:/taiga/static
 
   taiga-front:
@@ -98,7 +98,7 @@ services:
     env_file:
       - .env
     volumes:
-      - taiga-media:/taiga/media
+      - taiga-media:/taiga-back/media
 
   gateway:
     image: nginx:1.25-alpine
@@ -111,6 +111,7 @@ services:
       - taiga-protected
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - taiga-media:/taiga-back/media:ro
     ports:
       - "${TAIGA_HTTP_PORT:-9000}:80"
 
