@@ -13,7 +13,7 @@ BRIDGE = os.environ.get("AIDA_BRIDGE", "http://127.0.0.1:8787")
 def main(argv: Optional[list[str]] = None) -> int:
 	p = argparse.ArgumentParser(description="Suggest and optionally select the next task (safe confirm)")
 	p.add_argument("--type", default="issue", choices=["issue"], help="Item type (default: issue)")
-	p.add_argument("--profile", default="developer", help="Profile to consider as 'me' (default: developer)")
+	p.add_argument("--profile", required=True, help="Profile to consider as 'me' (user|ide|scrum)")
 	p.add_argument("--yes", action="store_true", help="Auto-confirm selection without prompting")
 	p.add_argument("--json", action="store_true", help="Output suggestion JSON and exit (no prompt)")
 	args = p.parse_args(argv or sys.argv[1:])

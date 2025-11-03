@@ -68,8 +68,14 @@ def _update_status(client: TaigaClient, project_id: int, item_type: str, item_id
 	return client.update_item_status(item_type=item_type, item_id=item_id, status_id=status_id)
 
 
+def _client_for_event(obj: dict) -> TaigaClient:
+	prof = (obj.get("profile") or "").strip()
+	if prof:
+		return TaigaClient.from_profile(prof)
+	return TaigaClient.from_env()
+
+
 def sync_outbox(dry_run: bool = False, limit: int = 100) -> Dict[str, Any]:
-	client = TaigaClient.from_env()
 	state = SyncState.load()
 	OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
 	files = sorted(OUTBOX_DIR.glob("*.json"))[:limit]
@@ -82,6 +88,7 @@ def sync_outbox(dry_run: bool = False, limit: int = 100) -> Dict[str, Any]:
 			cid = f.stem.split("-")[-1]
 			if cid in state.processed:
 				continue
+			client = _client_for_event(obj)
 			etype = obj.get("t")
 			project_id = int(obj.get("p"))
 			item = obj.get("item") or {}

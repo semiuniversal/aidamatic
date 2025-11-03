@@ -32,6 +32,20 @@ class TaigaClient:
 
 	@classmethod
 	def from_env(cls) -> "TaigaClient":
+		# 0) honor explicit profile via env
+		profile = os.environ.get("AIDA_AUTH_PROFILE", "").strip()
+		if profile:
+			auth_path = os.path.join(os.getcwd(), ".aida", f"auth.{profile}.json")
+			if os.path.isfile(auth_path):
+				try:
+					with open(auth_path, "r", encoding="utf-8") as f:
+						data = json.load(f)
+						base_url = data.get("base_url") or DEFAULT_BASE_URL
+						token = data.get("token") or ""
+						if token:
+							return cls(base_url=base_url, token=token)
+				except Exception:
+					pass
 		# 1) auth.json
 		if os.path.isfile(AUTH_FILE):
 			try:

@@ -34,3 +34,20 @@ until curl -fsS http://localhost:9000/api/v1/ >/dev/null 2>&1; do
 done
 
 echo "API up"
+
+# Ensure auth endpoint responds (proves Django fully loaded)
+until [ "$(curl -fsS -o /dev/null -w "%{http_code}" -H 'Content-Type: application/json' -d '{"type":"normal","username":"_","password":"_"}' http://localhost:9000/api/v1/auth || true)" = "401" ]; do
+	now=$(date +%s)
+	if (( now - start > TIMEOUT )); then
+		echo "Timeout waiting for Taiga auth endpoint" >&2
+		exit 1
+	fi
+	sleep 2
+	echo "Waiting for auth..." >&2
+
+done
+
+echo "Auth endpoint up"
+
+# Grace period to allow backend to finish applying migrations
+sleep 15

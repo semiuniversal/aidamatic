@@ -132,7 +132,7 @@ def start_bridge_background() -> None:
 
 
 def main() -> int:
-	print("AIDA setup wizard\n")
+	print("AIDA start\n")
 	if system_running():
 		print("Taiga appears to be running. Continuing without reset...")
 
@@ -158,19 +158,19 @@ def main() -> int:
 		os.environ["TAIGA_ADMIN_USER"] = admin_user
 		os.environ["TAIGA_ADMIN_PASSWORD"] = admin_pass
 
-	# Seed developer profile from default auth/token if present (non-destructive)
+	# Seed ide profile from default auth/token if present (non-destructive)
 	try:
 		base = Path.cwd() / ".aida"
 		base.mkdir(parents=True, exist_ok=True)
 		default_auth = base / "auth.json"
-		dev_auth = base / "auth.developer.json"
-		if default_auth.exists() and not dev_auth.exists():
-			dev_auth.write_text(default_auth.read_text())
+		ide_auth = base / "auth.ide.json"
+		if default_auth.exists() and not ide_auth.exists():
+			ide_auth.write_text(default_auth.read_text())
 			root = Path.cwd()
 			tkn = root / ".taiga_token"
-			dev_tkn = root / ".taiga_token.developer"
-			if tkn.exists() and not dev_tkn.exists():
-				dev_tkn.write_text(tkn.read_text())
+			ide_tkn = root / ".taiga_token.ide"
+			if tkn.exists() and not ide_tkn.exists():
+				ide_tkn.write_text(tkn.read_text())
 			# update identities.json with username/email
 			try:
 				data = json.loads(default_auth.read_text() or "{}")
@@ -178,10 +178,10 @@ def main() -> int:
 				ident = {}
 				if ident_path.exists():
 					ident = json.loads(ident_path.read_text() or "{}")
-				dev = ident.get("developer") or {}
-				if data.get("username"): dev["username"] = data.get("username")
-				if data.get("email"): dev["email"] = data.get("email")
-				ident["developer"] = dev
+				ide = ident.get("ide") or {}
+				if data.get("username"): ide["username"] = data.get("username")
+				if data.get("email"): ide["email"] = data.get("email")
+				ident["ide"] = ide
 				ident_path.write_text(json.dumps(ident, indent=2))
 			except Exception:
 				pass
@@ -193,12 +193,13 @@ def main() -> int:
 		ident_path = Path.cwd() / ".aida" / "identities.json"
 		if ident_path.exists():
 			ident = json.loads(ident_path.read_text())
-			dev_user = (ident.get("developer") or {}).get("username")
-			dev_pass = (ident.get("developer") or {}).get("password")
-			if dev_user and dev_pass:
-				os.environ["TAIGA_ADMIN_USER"] = dev_user
-				os.environ["TAIGA_ADMIN_PASSWORD"] = dev_pass
-				run(["aida-taiga-auth", "--profile", "developer", "--activate", "--switch-user"])  # activate developer
+			ide_node = (ident.get("ide") or ident.get("developer") or {})
+			ide_user = ide_node.get("username")
+			ide_pass = ide_node.get("password")
+			if ide_user and ide_pass:
+				os.environ["TAIGA_ADMIN_USER"] = ide_user
+				os.environ["TAIGA_ADMIN_PASSWORD"] = ide_pass
+				run(["aida-taiga-auth", "--profile", "ide", "--activate", "--switch-user"])  # activate ide
 			scr_user = (ident.get("scrum") or {}).get("username")
 			scr_pass = (ident.get("scrum") or {}).get("password")
 			if scr_user and scr_pass:
@@ -212,14 +213,12 @@ def main() -> int:
 
 
 	print("Starting AIDA Bridge on http://127.0.0.1:8787 ...")
-	# Ensure Bridge uses scrum profile by default for sync
-	os.environ["AIDA_AUTH_PROFILE"] = "scrum"
 	start_bridge_background()
 
 	print("\nDone. Useful commands:")
 	print("  aida-projects-list        # list your projects")
 	print("  aida-items-list --type issue --assigned-to-me")
-	print("  aida-task-comment --text 'Hello' ; aida-task-status --to in_progress")
+	print("  aida-item --comment 'Hello' ; aida-item --status to=in_progress")
 	print("  aida-sync                 # push comment/status to Taiga")
 	print("\nOpen Taiga:   http://localhost:9000")
 	print("AIDA Bridge:  http://127.0.0.1:8787")

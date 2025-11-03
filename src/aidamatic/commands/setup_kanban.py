@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
 	)
 	print(f"Created project: {created.get('name')} ({created.get('slug')}) id={created.get('id')}")
 
-	# Add developer and scrum users as members if identities.json is present
+	# Add ide and scrum users as members if identities.json is present
 	try:
 		ident_path = os.path.join(os.getcwd(), ".aida", "identities.json")
 		if os.path.isfile(ident_path):
@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
 					role_id = int(r.get("id")); break
 			if role_id is None and roles:
 				role_id = int(roles[0].get("id"))
-			for key in ("developer", "scrum"):
+			for key in ("ide", "scrum", "developer"):
 				u = (ident.get(key) or {}).get("username")
 				if not u or role_id is None:
 					continue

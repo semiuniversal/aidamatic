@@ -29,18 +29,20 @@ def bind_cached_identities() -> None:
 		return
 	try:
 		ident = json.loads(ident_path.read_text())
-		dev_user = (ident.get("developer") or {}).get("username")
-		dev_pass = (ident.get("developer") or {}).get("password")
-		if dev_user and dev_pass:
-			os.environ["TAIGA_ADMIN_USER"] = dev_user
-			os.environ["TAIGA_ADMIN_PASSWORD"] = dev_pass
-			run(["aida-taiga-auth", "--profile", "developer", "--activate", "--switch-user"])  # active default
+		# Authenticate non-human profiles (ide, scrum). Human 'user' is not cached with password.
+		ide_node = (ident.get("ide") or ident.get("developer") or {})
+		ide_user = ide_node.get("username")
+		ide_pass = ide_node.get("password")
+		if ide_user and ide_pass:
+			os.environ["TAIGA_ADMIN_USER"] = ide_user
+			os.environ["TAIGA_ADMIN_PASSWORD"] = ide_pass
+			run(["aida-taiga-auth", "--profile", "ide", "--switch-user"])  # cache token
 		scrum_user = (ident.get("scrum") or {}).get("username")
 		scrum_pass = (ident.get("scrum") or {}).get("password")
 		if scrum_user and scrum_pass:
 			os.environ["TAIGA_ADMIN_USER"] = scrum_user
 			os.environ["TAIGA_ADMIN_PASSWORD"] = scrum_pass
-			run(["aida-taiga-auth", "--profile", "scrum", "--switch-user"])  # background profile
+			run(["aida-taiga-auth", "--profile", "scrum", "--switch-user"])  # cache token
 	except subprocess.CalledProcessError:
 		print("Cached identity auth failed. Consider running: aida-setup --reset")
 
@@ -54,7 +56,7 @@ def do_init() -> int:
 			run(["aida-taiga-wait", "--timeout", wait_timeout])
 		except Exception:
 			pass
-	print("Binding cached identities (developer active; scrum background)...")
+	print("Binding cached identities (ide active; scrum background)...")
 	bind_cached_identities()
 	(Path.cwd() / ".aida" / "initialized").write_text("ok")
 	print("Initialization complete.")
@@ -65,14 +67,15 @@ def do_reset(args) -> int:
 	if not args.force:
 		print("Refusing to reset without --force. This is a destructive operation.")
 		return 1
-	confirm = input("Type RESET to confirm destructive reset: ").strip()
-	if confirm != "RESET":
-		print("Reset aborted.")
-		return 1
-	admin_user: str = args.admin_user or (input("Admin username [admin]: ").strip() or "admin")
+	if not getattr(args, "yes", False):
+		confirm = input("Type RESET to confirm destructive reset: ").strip()
+		if confirm != "RESET":
+			print("Reset aborted.")
+			return 1
+	admin_user: str = args.admin_user or (input("User username [user]: ").strip() or "user")
 	admin_email_default = f"{admin_user}@localhost"
-	admin_email: str = args.admin_email or (input(f"Admin email [{admin_email_default}]: ").strip() or admin_email_default)
-	admin_pass: str = args.admin_pass or getpass.getpass(f"Admin password for {admin_user}: ")
+	admin_email: str = args.admin_email or (input(f"User email [{admin_email_default}]: ").strip() or admin_email_default)
+	admin_pass: str = args.admin_pass or getpass.getpass(f"User password for {admin_user} (admin privileges): ")
 	print("\nPerforming full reset...")
 	run([
 		"aida-taiga-reset",
@@ -80,7 +83,7 @@ def do_reset(args) -> int:
 		"--admin-email", admin_email,
 		"--admin-pass", admin_pass,
 	])
-	print("Binding cached identities after reset...")
+	print("Binding cached identities after reset (user active; scrum background)...")
 	bind_cached_identities()
 	(Path.cwd() / ".aida" / "initialized").write_text("ok")
 	print("Reset complete.")
@@ -93,6 +96,7 @@ def main() -> int:
 	sub.add_argument("--init", action="store_true", help="Non-destructive initialization (default)")
 	sub.add_argument("--reset", action="store_true", help="Destructive reset (requires --force and confirmation)")
 	parser.add_argument("--force", action="store_true", help="Required for --reset")
+	parser.add_argument("--yes", action="store_true", help="Skip interactive confirmations (for automation)")
 	parser.add_argument("--admin-user", help="Admin username for --reset")
 	parser.add_argument("--admin-email", help="Admin email for --reset")
 	parser.add_argument("--admin-pass", help="Admin password for --reset")

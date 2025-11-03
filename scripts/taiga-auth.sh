@@ -37,6 +37,10 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+# Back-compat: map deprecated profile name
+if [[ "$PROFILE" == "developer" ]]; then
+	PROFILE="ide"
+fi
 if [[ -n "$PROFILE" ]]; then
 	TOKEN_FILE="$ROOT_DIR/.taiga_token.$PROFILE"
 fi
@@ -68,17 +72,27 @@ if [[ -n "$PRE_PASS" ]]; then TAIGA_ADMIN_PASSWORD="$PRE_PASS"; fi
 : "${TAIGA_BASE_URL:=http://localhost:9000}"
 TAIGA_ADMIN_USER="${TAIGA_ADMIN_USER:-}"
 TAIGA_ADMIN_PASSWORD="${TAIGA_ADMIN_PASSWORD:-}"
+PYTHON_BIN="$(command -v python3 || true)"; [[ -z "$PYTHON_BIN" ]] && PYTHON_BIN="$(command -v python || true)"
 
 # If profile maps to identities.json, prefill
 if [[ -f "$IDENT_FILE" && -n "$PROFILE" ]]; then
 	case "$PROFILE" in
-		developer)
-			VALS="$($PYTHON_BIN -c 'import sys,json; d=json.load(open(sys.argv[1])); print((d.get("developer") or {}).get("username","")); print((d.get("developer") or {}).get("password",""))' "$IDENT_FILE" 2>/dev/null || true)"
+		ide)
+			if [[ -n "$PYTHON_BIN" ]]; then
+				# Prefer ide entry; fall back to developer if ide missing
+				VALS="$($PYTHON_BIN -c 'import sys,json; d=json.load(open(sys.argv[1])); n=(d.get("ide") or d.get("developer") or {}); print(n.get("username","")); print(n.get("password",""))' "$IDENT_FILE" 2>/dev/null || true)"
+			else
+				VALS=""
+			fi
 			TAIGA_ADMIN_USER="${TAIGA_ADMIN_USER:-$(printf '%s' "$VALS" | sed -n '1p')}"
 			TAIGA_ADMIN_PASSWORD="${TAIGA_ADMIN_PASSWORD:-$(printf '%s' "$VALS" | sed -n '2p')}"
 			;;
 		scrum)
-			VALS="$($PYTHON_BIN -c 'import sys,json; d=json.load(open(sys.argv[1])); print((d.get("scrum") or {}).get("username","")); print((d.get("scrum") or {}).get("password",""))' "$IDENT_FILE" 2>/dev/null || true)"
+			if [[ -n "$PYTHON_BIN" ]]; then
+				VALS="$($PYTHON_BIN -c 'import sys,json; d=json.load(open(sys.argv[1])); n=(d.get("scrum") or {}); print(n.get("username","")); print(n.get("password",""))' "$IDENT_FILE" 2>/dev/null || true)"
+			else
+				VALS=""
+			fi
 			TAIGA_ADMIN_USER="${TAIGA_ADMIN_USER:-$(printf '%s' "$VALS" | sed -n '1p')}"
 			TAIGA_ADMIN_PASSWORD="${TAIGA_ADMIN_PASSWORD:-$(printf '%s' "$VALS" | sed -n '2p')}"
 			;;
@@ -159,6 +173,9 @@ JSON
 		$PYTHON_BIN - "$IDENT_FILE" "$PROFILE" "$USER_NAME" "$USER_EMAIL" <<'PY'
 import sys, json, os
 path, profile, uname, email = sys.argv[1:5]
+# Back-compat: normalize developer->ide
+if profile == "developer":
+    profile = "ide"
 data = {}
 if os.path.exists(path):
     try:
@@ -166,6 +183,9 @@ if os.path.exists(path):
             data = json.load(f)
     except Exception:
         data = {}
+# If ide missing but developer present, promote developer -> ide (non-destructive)
+if profile == "ide" and "ide" not in data and isinstance(data.get("developer"), dict):
+    data["ide"] = dict(data.get("developer"))
 node = data.get(profile) or {}
 if uname:
     node["username"] = uname

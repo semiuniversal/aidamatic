@@ -72,6 +72,10 @@ services:
     volumes:
       - taiga-media:/taiga-back/media
       - taiga-static:/taiga/static
+    # TEMPORARY: expose backend directly for debugging auth via http://localhost:9001
+    # Remove this ports section once the gateway header/host issue is resolved
+    ports:
+      - "9001:8000"
 
   taiga-front:
     image: taigaio/taiga-front:${TAIGA_TAG:-latest}

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Header
 from pydantic import BaseModel, Field
 
 from aidamatic.assignment import load_assignment
@@ -86,14 +86,22 @@ class NextSuggestion(BaseModel):
 	priority: Optional[int] = None
 
 
+def _require_profile(profile_q: Optional[str], profile_h: Optional[str]) -> str:
+	prof = (profile_h or "").strip() or (profile_q or "").strip()
+	if not prof:
+		raise HTTPException(status_code=409, detail="No profile specified. Pass header X-AIDA-Profile or ?profile=")
+	return prof
+
+
 @APP.get("/health")
 async def health() -> dict:
 	return {"status": "ok"}
 
 
 @APP.get("/projects", response_model=List[ProjectDTO])
-async def projects(all: bool = Query(False), tag: Optional[str] = Query(None)) -> List[ProjectDTO]:
-	client = TaigaClient.from_env()
+async def projects(all: bool = Query(False), tag: Optional[str] = Query(None), profile: Optional[str] = Query(None), x_profile: Optional[str] = Header(None, alias="X-AIDA-Profile")) -> List[ProjectDTO]:
+	prof = _require_profile(profile, x_profile)
+	client = TaigaClient.from_profile(prof)
 	me = client.get_me()
 	items = client.list_projects_filtered(member_id=me.get("id"), is_archived=None if all else False)
 	if tag:
@@ -128,7 +136,7 @@ def _ensure_outbox() -> None:
 	OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _write_outbox(event_type: str, project_id: int, slug: Optional[str], name: Optional[str], payload: dict) -> HistoryItem:
+def _write_outbox(event_type: str, project_id: int, slug: Optional[str], name: Optional[str], payload: dict, profile: str) -> HistoryItem:
 	_ensure_outbox()
 	ts = datetime.now(timezone.utc).isoformat()
 	# include selected item snapshot when available
@@ -141,7 +149,7 @@ def _write_outbox(event_type: str, project_id: int, slug: Optional[str], name: O
 			"ref": assignment.item_ref,
 			"subject": assignment.item_subject,
 		}
-	record = {"t": event_type, "p": project_id, "s": slug, "n": name, "ts": ts, "payload": payload, "item": item}
+	record = {"t": event_type, "p": project_id, "s": slug, "n": name, "ts": ts, "payload": payload, "item": item, "profile": profile}
 	content = json.dumps(record, sort_keys=True).encode("utf-8")
 	cid = hashlib.sha1(content).hexdigest()  # content-hash for idempotency
 	path = OUTBOX_DIR / f"{ts}-{cid}.json"
@@ -151,21 +159,23 @@ def _write_outbox(event_type: str, project_id: int, slug: Optional[str], name: O
 
 
 @APP.post("/task/comment", response_model=HistoryItem)
-async def task_comment(req: CommentReq) -> HistoryItem:
+async def task_comment(req: CommentReq, profile: Optional[str] = Query(None), x_profile: Optional[str] = Header(None, alias="X-AIDA-Profile")) -> HistoryItem:
 	assignment = load_assignment()
 	if not assignment:
 		raise HTTPException(status_code=409, detail="No assignment selected. Run aida-task-select.")
+	prof = _require_profile(profile, x_profile)
 	payload = {"text": req.text}
-	return _write_outbox("comment", assignment.project_id, assignment.slug, assignment.name, payload)
+	return _write_outbox("comment", assignment.project_id, assignment.slug, assignment.name, payload, prof)
 
 
 @APP.post("/task/status", response_model=HistoryItem)
-async def task_status(req: StatusReq) -> HistoryItem:
+async def task_status(req: StatusReq, profile: Optional[str] = Query(None), x_profile: Optional[str] = Header(None, alias="X-AIDA-Profile")) -> HistoryItem:
 	assignment = load_assignment()
 	if not assignment:
 		raise HTTPException(status_code=409, detail="No assignment selected. Run aida-task-select.")
+	prof = _require_profile(profile, x_profile)
 	payload = {"to": req.to}
-	return _write_outbox("status", assignment.project_id, assignment.slug, assignment.name, payload)
+	return _write_outbox("status", assignment.project_id, assignment.slug, assignment.name, payload, prof)
 
 
 # ---- Docs inbox ----
@@ -263,17 +273,18 @@ async def chat_thread(tail: Optional[int] = Query(None, ge=1)) -> List[ChatMsg]:
 # ---- Next item suggestion ----
 
 @APP.get("/task/next", response_model=NextSuggestion)
-async def task_next(item_type: str = Query("issue"), profile: str = Query("developer")) -> NextSuggestion:
+async def task_next(item_type: str = Query("issue"), profile: Optional[str] = Query(None), x_profile: Optional[str] = Header(None, alias="X-AIDA-Profile")) -> NextSuggestion:
 	assignment = load_assignment()
 	if not assignment or not assignment.project_id:
 		raise HTTPException(status_code=409, detail="No project selected. Run aida-task-select.")
+	prof = _require_profile(profile, x_profile)
 	project_id = int(assignment.project_id)
-	# Use developer profile to scope "assigned_to me" preference
-	dev_client = TaigaClient.from_profile(profile)
+	# Use requested profile to scope identity
+	dev_client = TaigaClient.from_profile(prof)
 	if not dev_client or not dev_client.get_me().get("id"):
-		raise HTTPException(status_code=409, detail=f"Profile '{profile}' is not authenticated. Run aida-taiga-auth --profile {profile} --activate")
+		raise HTTPException(status_code=409, detail=f"Profile '{prof}' is not authenticated. Run aida-taiga-auth --profile {prof} --activate")
 	dev_id = int(dev_client.get_me().get("id"))
-	client = TaigaClient.from_env()
+	client = TaigaClient.from_profile(prof)
 	if item_type != "issue":
 		raise HTTPException(status_code=400, detail="Only item_type=issue is supported for now.")
 	resp = client.get("/api/v1/issues", params={"project": project_id})
@@ -288,11 +299,11 @@ async def task_next(item_type: str = Query("issue"), profile: str = Query("devel
 		open_issues.append(it)
 	if not open_issues:
 		raise HTTPException(status_code=404, detail="No open items found. Adjust Taiga or create work.")
-	# Prefer assigned to developer, then unassigned
+	# Prefer assigned to profile user, then unassigned
 	prefer = [i for i in open_issues if (i.get("assigned_to") == dev_id)]
 	if not prefer:
 		prefer = [i for i in open_issues if (i.get("assigned_to") in (None, 0))]
-	# Simple sort by priority (lower first) then created_date
+	# Simple sort by priority then created_date
 	def score(it: dict) -> tuple:
 		return (int(it.get("priority") or 0), str(it.get("created_date") or ""))
 	prefer.sort(key=score)
