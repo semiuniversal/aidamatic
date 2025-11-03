@@ -45,57 +45,83 @@ More context: see `doc/aida_v2.md` for the product brief and developer guide.
 - Python 3.10+ with pip
 - Optional: ANTHROPIC_API_KEY for the smoke test (not required for core features)
 
-## Quick start
+## Quick start (first install)
+
+1. **Clone this repo** and enter the folder.
+2. **Run the one-line bootstrap** (creates the virtual env, installs dependencies, resets Taiga, starts everything):
+   ```bash
+   ./setup.sh --bootstrap
+   ```
+   - Expect this to take 3–5 minutes on a cold start. You will see live progress (for example `Waiting for API... (elapsed 02m15s)`).
+   - Do not interrupt until you see `Bootstrap complete in 0XmYYs` and the printed Taiga credentials.
+   - The bootstrap provisions three accounts (`user`, `ide`, `scrum`) and leaves the stack running with the Bridge listening on `127.0.0.1:8787`.
+   - You can supply `AIDA_BOOTSTRAP_ADMIN_PASS=...` to skip the password prompt; otherwise you’ll be asked once (press Enter to auto-generate).
+   - The human account credentials are shown at the end (`user` / chosen password). AI identities live in `.aida/identities.json`.
+3. **Activate the virtual environment** (bootstrap creates `.venv`):
+   ```bash
+   source .venv/bin/activate
+   ```
+
+That’s it—you can now use the CLI helpers below. Every subsequent terminal session only needs `source .venv/bin/activate` followed by `aida-start`.
+
+### What you’ll see during bootstrap
+
+- `Waiting for gateway/API/auth ... (elapsed mm:ss)` – automatic readiness checks. The Taiga containers need a few minutes after migrations.
+- `Applying backend grace period` – a final 15‑second buffer before identities are reconciled.
+- `AIDA start` output – once this finishes and prints `AIDA is ready`, the system is live.
+
+If bootstrap fails, revisit Docker Desktop state, rerun `./setup.sh --bootstrap`, and check `.aida/bridge.log` for Bridge issues.
+
+## Daily usage
 
 ```bash
-aida-setup --init
-#aida-start starts services and the local Bridge (non-interactive)
+# Start services + Bridge (takes a few minutes, blocks until ready)
+aida-start
+
+# Stop everything
+aida-stop
+
+# Restart quickly
+aida-restart
+```
+
+- `aida-start` is safe to rerun; it waits for Taiga and the auth endpoint before reconciling identities and launching the Bridge. Progress messages continue to show elapsed time.
+- `aida-stop` stops both the Bridge and the Taiga Docker stack.
+
+> Identities are modal. Bridge CLIs need `--profile user|ide|scrum`; Taiga helpers can use `AIDA_AUTH_PROFILE=<profile>`. See [Identities and profiles](#identities-and-profiles).
+
+### Optional: fresh reset mid-project
+
+If you need a destructive reset later (drop volumes, recreate identities) run:
+```bash
+aida-setup --reset --force --yes
+# then
 aida-start
 ```
+Only use the reset when you’re okay with losing the Taiga database.
 
-- aida-setup --init: non-destructive initialization that starts Taiga and binds cached identities.
-- aida-start: starts services and the AIDA Bridge in the background. No prompts.
+## Manual installation (advanced)
 
-Control:
-- aida-stop: stops the Bridge and Taiga stack
-- aida-restart: stop then start again
+You rarely need this now that `./setup.sh --bootstrap` handles everything, but the steps remain available for power users:
 
-Note on identities: All operations are modal by profile. Pass `--profile user|ide|scrum` on CLIs that hit the Bridge; or set `AIDA_AUTH_PROFILE` for direct Taiga CLIs. See “Identities and profiles”.
+1. Create/activate a virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
+2. Install in editable mode (`uv` or `pip`):
+   ```bash
+   uv pip install -e .  # or: pip install -e .
+   ```
+3. Copy `docker/env.example` to `docker/.env` and tweak if you need custom ports/domains.
+4. Start Taiga manually with `aida-taiga-up` and follow the advanced helpers in the next section.
 
-## Installation
+## Troubleshooting wait times
 
-1. Create and activate a virtual environment
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-```
-
-2. Install in editable mode (supports `uv` or `pip`)
-
-```bash
-# Using uv
-uv pip install -e .
-
-# Or using pip
-pip install -e .
-```
-
-Tip: define a reusable alias to run setup then activate the venv in your current shell session:
-
-```bash
-alias av="./setup.sh && source .venv/bin/activate && rehash"
-```
-
-Then you can simply run `av` next time you open a terminal in this project (or any similar Python project).
-
-3. Configure environment (dev)
-
-```bash
-# Create a .env file and add your keys when ready
-# Example:
-# ANTHROPIC_API_KEY=sk-ant-...
-```
+- Long pauses (~3–5 minutes) during `./setup.sh --bootstrap` or `aida-start` are normal. Look for the elapsed timers; as long as they’re updating, the system is still preparing migrations.
+- If the wait exceeds ~6 minutes or you see a timeout, run `docker compose -f docker/docker-compose.yml logs taiga-back` to ensure migrations aren’t failing.
+- For Bridge issues, check `.aida/bridge.log` after `aida-start` finishes.
+- If Docker Desktop was restarted, rerun `aida-start`; it will reconcile identities again automatically.
 
 ## Advanced / Admin
 

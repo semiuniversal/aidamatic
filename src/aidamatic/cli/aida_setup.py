@@ -14,6 +14,12 @@ def run(cmd: list[str]) -> None:
 		raise subprocess.CalledProcessError(res.returncode, cmd)
 
 
+def wait_for_taiga_ready(context: str) -> None:
+	wait_timeout = os.environ.get("AIDA_TAIGA_WAIT", "360")
+	print(f"Waiting for Taiga backend to be ready ({context})...")
+	run(["aida-taiga-wait", "--timeout", wait_timeout])
+
+
 def system_running() -> bool:
 	try:
 		ping = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:9000/"], capture_output=True, text=True)
@@ -51,13 +57,15 @@ def do_init() -> int:
 	if not system_running():
 		print("Starting Taiga stack...")
 		run(["aida-taiga-up"])  # prints URLs
-		try:
-			wait_timeout = os.environ.get("AIDA_TAIGA_WAIT", "180")
-			run(["aida-taiga-wait", "--timeout", wait_timeout])
-		except Exception:
-			pass
+	wait_for_taiga_ready("init")
 	print("Binding cached identities (ide active; scrum background)...")
 	bind_cached_identities()
+	# Reconcile and verify tokens post-bind
+	try:
+		from aidamatic.identity.reconcile import reconcile_and_verify
+		reconcile_and_verify()
+	except Exception as e:
+		print(f"[WARN] Identity reconcile skipped during init: {e}")
 	(Path.cwd() / ".aida" / "initialized").write_text("ok")
 	print("Initialization complete.")
 	return 0
@@ -83,8 +91,15 @@ def do_reset(args) -> int:
 		"--admin-email", admin_email,
 		"--admin-pass", admin_pass,
 	])
+	wait_for_taiga_ready("reset")
 	print("Binding cached identities after reset (user active; scrum background)...")
 	bind_cached_identities()
+	# Reconcile and verify tokens post-reset
+	try:
+		from aidamatic.identity.reconcile import reconcile_and_verify
+		reconcile_and_verify()
+	except Exception as e:
+		print(f"[WARN] Identity reconcile skipped during reset: {e}")
 	(Path.cwd() / ".aida" / "initialized").write_text("ok")
 	print("Reset complete.")
 	return 0

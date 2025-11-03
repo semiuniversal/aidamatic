@@ -11,6 +11,18 @@ fi
 
 start=$(date +%s)
 
+fmt_elapsed() {
+	local secs=$1
+	printf "%02dm%02ds" $((secs/60)) $((secs%60))
+}
+
+print_wait() {
+	local stage="$1"
+	local now=$(date +%s)
+	local elapsed=$(( now - start ))
+	printf "Waiting for %s... (elapsed %s)\n" "$stage" "$(fmt_elapsed "$elapsed")" >&2
+}
+
 until curl -fsS http://localhost:9000/ >/dev/null 2>&1; do
 	now=$(date +%s)
 	if (( now - start > TIMEOUT )); then
@@ -18,10 +30,10 @@ until curl -fsS http://localhost:9000/ >/dev/null 2>&1; do
 		exit 1
 	fi
 	sleep 2
-	echo "Waiting for gateway..." >&2
+	print_wait "gateway"
 done
-
-echo "Gateway up"
+	now=$(date +%s)
+	echo "Gateway up (elapsed $(fmt_elapsed $((now - start))))"
 
 until curl -fsS http://localhost:9000/api/v1/ >/dev/null 2>&1; do
 	now=$(date +%s)
@@ -30,10 +42,10 @@ until curl -fsS http://localhost:9000/api/v1/ >/dev/null 2>&1; do
 		exit 1
 	fi
 	sleep 2
-	echo "Waiting for API..." >&2
+	print_wait "API"
 done
-
-echo "API up"
+	now=$(date +%s)
+	echo "API up (elapsed $(fmt_elapsed $((now - start))))"
 
 # Ensure auth endpoint responds (proves Django fully loaded)
 until [ "$(curl -fsS -o /dev/null -w "%{http_code}" -H 'Content-Type: application/json' -d '{"type":"normal","username":"_","password":"_"}' http://localhost:9000/api/v1/auth || true)" = "401" ]; do
@@ -43,11 +55,16 @@ until [ "$(curl -fsS -o /dev/null -w "%{http_code}" -H 'Content-Type: applicatio
 		exit 1
 	fi
 	sleep 2
-	echo "Waiting for auth..." >&2
+	print_wait "auth"
 
 done
-
-echo "Auth endpoint up"
+	now=$(date +%s)
+	echo "Auth endpoint up (elapsed $(fmt_elapsed $((now - start))))"
 
 # Grace period to allow backend to finish applying migrations
-sleep 15
+GRACE=15
+echo "Applying backend grace period (${GRACE}s)..."
+sleep "$GRACE"
+now=$(date +%s)
+
+echo "Taiga backend ready (total $(fmt_elapsed $((now - start))))"

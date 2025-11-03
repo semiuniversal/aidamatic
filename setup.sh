@@ -146,44 +146,58 @@ separator
 # Bootstrap flow
 if [ "$BOOTSTRAP" -eq 1 ]; then
     echo "Running full bootstrap (destructive reset + init + start)..."
+    echo "This can take several minutes (3-5). Progress messages will appear; please do not interrupt."
+    BOOTSTRAP_STARTED=$(date +%s)
     ADMIN_USER="user"
     ADMIN_EMAIL="user@localhost"
-    ADMIN_PASS="$($PYTHON_BIN - <<'PY'
+    DEFAULT_ADMIN_PASS="$($PYTHON_BIN - <<'PY'
 import secrets
 print(secrets.token_urlsafe(16))
 PY
 )"
-    # Destructive reset without prompts
-    aida-setup --reset --force --yes --admin-user "$ADMIN_USER" --admin-email "$ADMIN_EMAIL" --admin-pass "$ADMIN_PASS" || true
-
-    # Defensive: wait a little longer for backend to settle
-    echo "Post-ready grace period..."
-    sleep 10
-
-    # Verify API auth with the user credentials; if it fails, attempt to set the password inside container and retry
-    auth_ok=0
-    for i in 1 2 3 4 5; do
-        HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H 'Content-Type: application/json' \
-            -d "{\"type\":\"normal\",\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
-            http://localhost:9000/api/v1/auth || true)
-        if [ "$HTTP" = "200" ]; then
-            auth_ok=1
-            break
-        fi
-        echo "Auth test failed (HTTP=$HTTP), attempt $i/5. Retrying password set..."
-        docker compose -f docker/docker-compose.yml exec -T taiga-back sh -lc \
-          "U=\"$ADMIN_USER\" E=\"$ADMIN_EMAIL\" P=\"$ADMIN_PASS\" /opt/venv/bin/python manage.py shell -c 'from django.contrib.auth import get_user_model as g; import os; U=g(); u=os.environ[\"U\"]; e=os.environ[\"E\"]; p=os.environ[\"P\"]; o,created=U.objects.get_or_create(username=u, defaults={\"email\": e}); o.email=e; o.is_active=True; o.is_staff=True; o.is_superuser=True; o.set_password(p); o.save(); print(\"ok\")'" || true
-        sleep 4
-    done
-    if [ "$auth_ok" -ne 1 ]; then
-        echo "Warning: could not verify API auth for $ADMIN_USER after retries. You may still log in via UI with the printed password."
+    if [ -z "$DEFAULT_ADMIN_PASS" ]; then
+        DEFAULT_ADMIN_PASS="tmpPass!123"
     fi
 
-    # Initialize and start
-    aida-setup --init || true
-    aida-start || true
-    echo ""
-    echo "Bootstrap complete."
+    if [ -z "${AIDA_BOOTSTRAP_ADMIN_PASS:-}" ]; then
+        printf "Admin password for Taiga user '%s' (leave blank to auto-generate): " "$ADMIN_USER"
+        stty_state=$(stty -g 2>/dev/null || printf '')
+        if stty -echo 2>/dev/null; then
+            read -r ADMIN_PASS_INPUT
+            stty "$stty_state" 2>/dev/null || true
+            printf "\n"
+        else
+            read -r ADMIN_PASS_INPUT
+        fi
+        if [ -z "$ADMIN_PASS_INPUT" ]; then
+            ADMIN_PASS="$DEFAULT_ADMIN_PASS"
+            echo "Generated admin password automatically."
+        else
+            ADMIN_PASS="$ADMIN_PASS_INPUT"
+        fi
+    else
+        ADMIN_PASS="$AIDA_BOOTSTRAP_ADMIN_PASS"
+        echo "Using admin password provided via AIDA_BOOTSTRAP_ADMIN_PASS."
+    fi
+    if [ -z "$ADMIN_PASS" ]; then
+        ADMIN_PASS="$DEFAULT_ADMIN_PASS"
+        echo "Warning: Generated fallback admin password."
+    fi
+
+    if ! aida-setup --reset --force --yes --admin-user "$ADMIN_USER" --admin-email "$ADMIN_EMAIL" --admin-pass "$ADMIN_PASS"; then
+        echo "Bootstrap reset failed. Aborting."
+        exit 1
+    fi
+
+    echo "Starting AIDA (this may take several minutes)..."
+    if ! aida-start; then
+        echo "Bootstrap failed during aida-start. Check logs above." >&2
+        exit 1
+    fi
+
+    BOOTSTRAP_ENDED=$(date +%s)
+    ELAPSED=$((BOOTSTRAP_ENDED - BOOTSTRAP_STARTED))
+    printf "\nBootstrap complete in %02dm%02ds.\n" $((ELAPSED/60)) $((ELAPSED%60))
     echo "Login to Taiga: http://localhost:9000"
     echo "  username: $ADMIN_USER"
     echo "  password: $ADMIN_PASS"

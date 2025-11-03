@@ -133,7 +133,8 @@ chmod 600 "$IDENT_FILE" || true
 set -a; . "$ENV_FILE"; set +a
 SCHEME="${TAIGA_SITES_SCHEME:-http}"; HOST="${TAIGA_SITES_DOMAIN:-localhost}"
 FRONT_URL="${TAIGA_FRONTEND_URL:-${SCHEME}://${HOST}}"
-API_URL="${TAIGA_BACKEND_URL:-${SCHEME}://${HOST}/api/v1/}"
+RAW_API_URL="${TAIGA_BACKEND_URL:-${SCHEME}://${HOST}}"
+API_URL="${RAW_API_URL%/}/api/v1/"
 echo "Taiga UI:   ${FRONT_URL}"
 echo "Taiga API:  ${API_URL}"
 

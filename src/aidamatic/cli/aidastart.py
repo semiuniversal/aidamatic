@@ -69,7 +69,7 @@ def ensure_env_with_port() -> None:
 	set_kv("TAIGA_SITES_DOMAIN", "localhost:9000")
 	set_kv("TAIGA_SITES_SCHEME", "http")
 	set_kv("TAIGA_FRONTEND_URL", "http://localhost:9000")
-	set_kv("TAIGA_BACKEND_URL", "http://localhost:9000/api/v1")
+	set_kv("TAIGA_BACKEND_URL", "http://localhost:9000")
 	set_kv("TAIGA_EVENTS_URL", "ws://localhost:9000/events")
 
 
@@ -133,25 +133,38 @@ def start_bridge_background() -> None:
 
 def main() -> int:
 	print("AIDA start\n")
-	if system_running():
-		print("Taiga appears to be running. Continuing without reset...")
+	print("This can take several minutes. Please wait until the ready message before interacting.\n")
 
 	ensure_env_with_port()
 	ensure_status_map()
+
+	already_running = system_running()
+	up_output = None
+	if already_running:
+		print("Taiga appears to be running. Continuing without reset...")
 
 	admin_user: Optional[str] = None
 	admin_email: Optional[str] = None
 	admin_pass: Optional[str] = None
 
 	# Safe start: never prompt to reset here; use `aida-setup --reset` instead
-	if not system_running():
+	if not already_running:
 		print("\nStarting Taiga stack...")
-		run(["aida-taiga-up"])  # prints URLs
+		up_output = run(["aida-taiga-up"], capture=True)
 		try:
 			wait_timeout = os.environ.get("AIDA_TAIGA_WAIT", "180")
 			run(["aida-taiga-wait", "--timeout", wait_timeout])
 		except Exception:
 			pass
+
+	# Ensure identities and tokens are reconciled post-start
+	try:
+		from aidamatic.identity.reconcile import wait_for_backend_ready, reconcile_and_verify
+		wait_for_backend_ready()
+		reconcile_and_verify()
+	except Exception as e:
+		print(f"[ERROR] Identity reconcile failed: {e}")
+		return 1
 
 	# Ensure auth uses the same credentials we just created
 	if admin_user and admin_pass:
@@ -214,8 +227,16 @@ def main() -> int:
 
 	print("Starting AIDA Bridge on http://127.0.0.1:8787 ...")
 	start_bridge_background()
+	if not bridge_responding():
+		print("[ERROR] AIDA Bridge did not become ready. Please inspect .aida/bridge.log.")
+		return 1
 
-	print("\nDone. Useful commands:")
+	if up_output is not None and up_output.stdout:
+		print("\nTaiga services:")
+		print(up_output.stdout.strip())
+
+	print("\nAIDA is ready. You can now interact with the system.")
+	print("\nUseful commands:")
 	print("  aida-projects-list        # list your projects")
 	print("  aida-items-list --type issue --assigned-to-me")
 	print("  aida-item --comment 'Hello' ; aida-item --status to=in_progress")
