@@ -76,8 +76,9 @@ class Readiness:
 def _poll_readiness(readiness: Readiness) -> None:
     status_root = _http_status(f"{GATEWAY_URL}/")
     readiness.root_ok = (status_root == 200)
-    status_api = _http_status(f"{GATEWAY_URL}/api/v1")
-    readiness.api_ok = (status_api == 200)
+    # Treat Taiga API reachable if projects endpoint returns 200/401/403
+    status_projects = _http_status(f"{GATEWAY_URL}/api/v1/projects")
+    readiness.api_ok = status_projects in (200, 401, 403)
     status_auth = _http_status(f"{GATEWAY_URL}/api/v1/auth")
     readiness.auth_present = (status_auth in (401, 405))
     status_bridge = _http_status(BRIDGE_HEALTH)
@@ -221,13 +222,13 @@ class LogAnalyzer:
         if self.phase == "Running migrations" and self.last_migration:
             parts.append(f"Running migrations: {self.last_migration} — {self.migrations_applied} applied")
         elif readiness.gateway_ready:
-            parts.append("Gateway ready (/:200, /api/v1:200); finalizing startup…")
+            parts.append("Gateway ready (/:200, /api/v1/projects:200/401/403); finalizing startup…")
         else:
             parts.append(self.phase)
         # Append readiness flags tersely
         flags = []
         flags.append("root=OK" if readiness.root_ok else "root=…")
-        flags.append("api=OK" if readiness.api_ok else "api=…")
+        flags.append("api=ready" if readiness.api_ok else "api=…")
         return Text(f"{parts[0]}    [" + ", ".join(flags) + f"]    Elapsed {elapsed}")
 
 
@@ -360,13 +361,16 @@ def main(argv: list[str] | None = None) -> int:
             live.update(render_group())
             time.sleep(1.0)
 
-        # Phase: TX2 - API /api/v1
-        progress.update(task_id, description="TX2: API check (GET /api/v1 → 200)", completed=65)
+        # Phase: TX2 - API /api/v1/projects
+        progress.update(task_id, description="TX2: API check (GET /api/v1/projects → 200/401/403)", completed=65)
         while time.time() < deadline and not readiness.api_ok:
             _poll_readiness(readiness)
             latest = _latest_line(line_queue)
             cur = min(85, progress.tasks[task_id].completed + 1)
-            progress.update(task_id, completed=cur, description=f"API check: /api/v1 → {('200 OK' if readiness.api_ok else '...')} | {latest[-80:] if latest else ''}")
+            # Show exact status value when possible for clarity
+            status_val = _http_status(f"{GATEWAY_URL}/api/v1/projects")
+            status_txt = status_val if status_val is not None else "..."
+            progress.update(task_id, completed=cur, description=f"API check: /api/v1/projects → {status_txt} | {latest[-80:] if latest else ''}")
             status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
             if latest:
                 log_line = Text(f"Log: {latest[-120:]}")
