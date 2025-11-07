@@ -10,16 +10,31 @@ echo "Starting project environment setup..."
 separator
 
 # Args: --init to run aida-setup --init, --start to run aida-start, --no-uv-install to skip uv bootstrap, --bootstrap for full one-line install
+# Added: --diagnose (run diagnostics), --robust-start (TX1/TX2 checks), --test-network, --test-taiga-api, --use-nginx-debug
 INIT=0
 START=0
 NO_UV_INSTALL=0
 BOOTSTRAP=0
+DIAGNOSE=0
+ROBUST_START=0
+TEST_NETWORK=0
+TEST_API=0
+USE_NGINX_DEBUG=0
+START_BRIDGE_FIXED=0
+TEST_BRIDGE_STARTUP=0
 for arg in "$@"; do
     case "$arg" in
         --init) INIT=1 ;;
         --start) START=1 ;;
         --no-uv-install) NO_UV_INSTALL=1 ;;
         --bootstrap) BOOTSTRAP=1 ;;
+        --diagnose) DIAGNOSE=1 ;;
+        --robust-start) ROBUST_START=1 ;;
+        --test-network) TEST_NETWORK=1 ;;
+        --test-taiga-api) TEST_API=1 ;;
+        --use-nginx-debug) USE_NGINX_DEBUG=1 ;;
+        --start-bridge-fixed) START_BRIDGE_FIXED=1 ;;
+        --test-bridge-startup) TEST_BRIDGE_STARTUP=1 ;;
     esac
 done
 
@@ -131,6 +146,16 @@ aida_env_prepare() {
 
 aida_env_prepare
 
+# Optional: enable nginx debug config if requested
+if [ "$USE_NGINX_DEBUG" -eq 1 ]; then
+    if [ -f "docker/nginx_debug.conf" ]; then
+        cp docker/nginx_debug.conf docker/nginx.conf
+        echo "Enabled docker/nginx_debug.conf (copied over docker/nginx.conf)."
+    else
+        echo "--use-nginx-debug requested but docker/nginx_debug.conf not found."
+    fi
+fi
+
 separator
 
 # Step 6: Install dependencies (editable mode)
@@ -142,6 +167,38 @@ uv pip install -e . || {
 echo "Dependencies installed successfully."
 
 separator
+
+# Short-circuit helpers if requested explicitly
+if [ "$DIAGNOSE" -eq 1 ]; then
+    echo "Running diagnostics (scripts/aida_diagnostic.py)..."
+    $PYTHON_BIN scripts/aida_diagnostic.py || true
+    exit 0
+fi
+if [ "$ROBUST_START" -eq 1 ]; then
+    echo "Running robust start helper (scripts/aida_start_robust.py)..."
+    $PYTHON_BIN scripts/aida_start_robust.py || true
+    exit 0
+fi
+if [ "$TEST_NETWORK" -eq 1 ]; then
+    echo "Running networking test (scripts/tests/test_networking_fix.py)..."
+    $PYTHON_BIN scripts/tests/test_networking_fix.py || true
+    exit 0
+fi
+if [ "$TEST_API" -eq 1 ]; then
+    echo "Running Taiga API test (scripts/tests/test_taiga_api.py)..."
+    $PYTHON_BIN scripts/tests/test_taiga_api.py || true
+    exit 0
+fi
+if [ "$START_BRIDGE_FIXED" -eq 1 ]; then
+    echo "Starting Bridge (scripts/start_bridge_fixed.py)..."
+    $PYTHON_BIN scripts/start_bridge_fixed.py || true
+    exit 0
+fi
+if [ "$TEST_BRIDGE_STARTUP" -eq 1 ]; then
+    echo "Running Bridge startup validation (scripts/tests/test_bridge_startup.py)..."
+    $PYTHON_BIN scripts/tests/test_bridge_startup.py || true
+    exit 0
+fi
 
 # Bootstrap flow
 if [ "$BOOTSTRAP" -eq 1 ]; then
@@ -168,7 +225,7 @@ if [ "$START" -eq 1 ]; then
     if command -v aida-start >/dev/null 2>&1; then
         aida-start || true
     else
-        "$PYTHON_BIN" -m aidamatic.cli.Right, so the biggest concern is the Aida Start application works unreliably. Seems like there are some race conditions involved. Let me give you that script too. || true
+        "$PYTHON_BIN" -m aidamatic.cli.aidastart || true
     fi
 fi
 
@@ -181,14 +238,22 @@ echo "Suggested reusable alias (add to your shell rc):"
 echo "  alias av=\"./setup.sh && source .venv/bin/activate && rehash\""
 echo
 echo "Next steps:"
-echo "  ./setup.sh --bootstrap  # one-line destructive install with credentials output"
-echo "  aida-setup --init       # initialize stack (if not running bootstrap)"
-echo "  aida-start              # start services and Bridge"
+echo "  ./setup.sh --bootstrap        # one-line destructive install with credentials output"
+echo "  ./setup.sh --robust-start     # bring up compose and validate TX1/TX2"
+echo "  ./setup.sh --diagnose         # quick diagnostics for endpoints and logs"
+echo "  ./setup.sh --test-network     # validate / and /api/v1"
+echo "  ./setup.sh --test-taiga-api   # POST /api/v1/auth and GET /users/me"
+echo "  ./setup.sh --use-nginx-debug  # swap in docker/nginx_debug.conf"
+echo "  aida-setup --init             # initialize stack (if not running bootstrap)"
+echo "  aida-start                    # start services and Bridge"
 echo "  AIDA_AUTH_PROFILE=user aida-setup-kanban --name \"My App\" --slug my-app"
 echo "  aida-task-select --slug my-app"
 echo "  AIDA_AUTH_PROFILE=ide aida-items-list --type issue"
 echo "  aida-item-select --type issue --id 123"
 echo "  aida-item --profile ide --comment \"Investigating now\""
+echo "  ./setup.sh --test-bridge        # direct bridge checks"
+echo "  ./setup.sh --start-bridge-fixed  # attempt manual Bridge start"
+echo "  ./setup.sh --test-bridge-startup # validate Bridge startup imports"
 
 separator
 

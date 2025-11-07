@@ -72,6 +72,8 @@ services:
     volumes:
       - taiga-media:/taiga-back/media
       - taiga-static:/taiga/static
+    expose:
+      - "8000"
 
   taiga-front:
     image: taigaio/taiga-front:${TAIGA_TAG:-latest}
@@ -81,6 +83,8 @@ services:
       - .env
     depends_on:
       - taiga-back
+    expose:
+      - "80"
 
   taiga-events:
     image: taigaio/taiga-events:${TAIGA_TAG:-latest}
@@ -90,6 +94,8 @@ services:
       - .env
     depends_on:
       - redis
+    expose:
+      - "8888"
 
   taiga-protected:
     image: taigaio/taiga-protected:${TAIGA_TAG:-latest}
@@ -99,6 +105,8 @@ services:
       - .env
     volumes:
       - taiga-media:/taiga-back/media
+    expose:
+      - "8000"
 
   gateway:
     image: nginx:1.25-alpine
@@ -114,6 +122,12 @@ services:
       - taiga-media:/taiga-back/media:ro
     ports:
       - "${TAIGA_HTTP_PORT:-9000}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 volumes:
   taiga-db:

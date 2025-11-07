@@ -17,3 +17,6 @@ docker/.env.local
 # Python cache
 __pycache__/
 *.pyc
+
+# Local minimax suggestions
+minimax/
