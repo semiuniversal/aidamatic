@@ -10,7 +10,7 @@ DEFAULT_PORT = 8787
 
 
 def run_server(argv: list[str] | None = None) -> int:
-	from aidamatic.bridge.app import run as run_app
+	from src.aidamatic.bridge.app import run as run_app
 	p = argparse.ArgumentParser(description="Run AIDA Bridge (localhost only)")
 	p.add_argument("--host", default=DEFAULT_HOST)
 	p.add_argument("--port", type=int, default=DEFAULT_PORT)

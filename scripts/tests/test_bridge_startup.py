@@ -15,28 +15,13 @@ def test_bridge_startup():
     print("🧪 Testing Bridge Server Startup")
     print("=" * 40)
 
-    # Method 1: Try the original command from aidastart.py
-    print("1. Testing original command: python -m aidamatic.bridge.app")
+    # Method 1: Try the corrected module command
+    print("1. Testing command: python -m src.aidamatic.bridge.app")
     try:
-        result = subprocess.run([sys.executable, "-m", "aidamatic.bridge.app"],
-                              capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            print("  ✅ SUCCESS - Bridge started")
-            print(f"  Output: {result.stdout[:200]}")
-        else:
-            print(f"  ❌ FAILED - Return code: {result.returncode}")
-            print(f"  Error: {result.stderr[:500]}")
-    except FileNotFoundError:
-        print("  ❌ FAILED - Module 'aidamatic.bridge.app' not found")
-    except subprocess.TimeoutExpired:
-        print("  ⏰ TIMEOUT - Bridge started but didn't exit (expected)")
-    except Exception as e:
-        print(f"  ❌ ERROR: {e}")
-
-    print("\n2. Testing alternative: python -m src.aidamatic.bridge.app")
-    try:
+        env = os.environ.copy()
+        env['PYTHONPATH'] = f"{Path.cwd()}:{Path.cwd() / 'src'}"
         result = subprocess.run([sys.executable, "-m", "src.aidamatic.bridge.app"],
-                              capture_output=True, text=True, timeout=10)
+                              env=env, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             print("  ✅ SUCCESS - Bridge started")
             print(f"  Output: {result.stdout[:200]}")
@@ -50,10 +35,12 @@ def test_bridge_startup():
     except Exception as e:
         print(f"  ❌ ERROR: {e}")
 
-    print("\n3. Testing direct import: python -c 'import aidamatic.bridge.app'")
+    print("\n2. Testing direct import: python -c 'import src.aidamatic.bridge.app'")
     try:
-        result = subprocess.run([sys.executable, "-c", "import aidamatic.bridge.app"],
-                              capture_output=True, text=True, timeout=10)
+        env = os.environ.copy()
+        env['PYTHONPATH'] = f"{Path.cwd()}:{Path.cwd() / 'src'}"
+        result = subprocess.run([sys.executable, "-c", "import src.aidamatic.bridge.app"],
+                              env=env, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             print("  ✅ SUCCESS - Module can be imported")
         else:
@@ -62,7 +49,7 @@ def test_bridge_startup():
     except Exception as e:
         print(f"  ❌ ERROR: {e}")
 
-    print("\n4. Checking Python path and current directory")
+    print("\n3. Checking Python path and current directory")
     print(f"  Current directory: {Path.cwd()}")
     print(f"  Python executable: {sys.executable}")
     print(f"  Python path: {sys.path[:3]}...")  # Show first 3 entries
@@ -79,11 +66,11 @@ def test_bridge_startup():
     else:
         print(f"  ❌ src/ directory NOT found")
 
-    print("\n5. Testing with explicit PYTHONPATH")
+    print("\n4. Testing with explicit PYTHONPATH")
     try:
         env = os.environ.copy()
-        env['PYTHONPATH'] = str(Path.cwd())
-        result = subprocess.run([sys.executable, "-c", "import aidamatic.bridge.app; print('Import successful')"],
+        env['PYTHONPATH'] = f"{Path.cwd()}:{Path.cwd() / 'src'}"
+        result = subprocess.run([sys.executable, "-c", "import src.aidamatic.bridge.app; print('Import successful')"],
                               env=env, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             print("  ✅ SUCCESS - Import works with PYTHONPATH")

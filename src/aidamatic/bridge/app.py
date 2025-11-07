@@ -10,9 +10,9 @@ from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Header
 from pydantic import BaseModel, Field
 
-from aidamatic.assignment import load_assignment
-from aidamatic.taiga.client import TaigaClient
-from aidamatic.sync.outbox_worker import sync_outbox, SyncState, STATE_FILE
+from src.aidamatic.assignment import load_assignment
+from src.aidamatic.taiga.client import TaigaClient
+from src.aidamatic.sync.outbox_worker import sync_outbox, SyncState, STATE_FILE
 
 APP = FastAPI(title="AIDA Bridge", version="0.1.0")
 
