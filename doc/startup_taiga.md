@@ -13,18 +13,18 @@ sequenceDiagram
     Start->>Start: ensure_env_with_port (TAIGA_* aligned)
     Start->>Compose: up -d (postgres, redis, rabbit, back, front, gateway)
     Compose-->>Start: containers started
-    Start->>Gwy: wait / (200)
-    Start->>Back: docker compose exec curl 127.0.0.1:8000/api/v1/auth (expect 401)
-    Note over Start,Back: retry until backend auth endpoint responds
+    Start->>Gwy: TX1: GET /  => 200 (gateway ready)
+    Start->>Gwy: TX2: GET /api/v1  => 200 (backend API ready)
+    Note over Start,Gwy: Do not GET /api/v1/auth for readiness (405/401 is expected)
 
     Start->>Reconcile: reconcile_and_verify()
     Reconcile->>Back: manage.py ensure ide/scrum active + passwords
-    Reconcile->>Gwy: POST /api/v1/auth (ide, scrum) -> tokens
+    Reconcile->>Gwy: TX3: POST /api/v1/auth (ide, scrum) => 200 + tokens
     Gwy-->>Reconcile: 200 + tokens
     Reconcile->>Start: write .aida/auth.<profile>.json
     Note over Start,Reconcile: abort start if reconcile/auth fails
 
     Start->>Bridge: start in background
-    Bridge-->>Start: /health 200
+    Bridge-->>Start: TX4: GET /health  => 200 (Bridge ready)
     Start-->>User: system ready
 ```

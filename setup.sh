@@ -145,64 +145,13 @@ separator
 
 # Bootstrap flow
 if [ "$BOOTSTRAP" -eq 1 ]; then
-    echo "Running full bootstrap (destructive reset + init + start)..."
-    echo "This can take several minutes (3-5). Progress messages will appear; please do not interrupt."
-    BOOTSTRAP_STARTED=$(date +%s)
-    ADMIN_USER="user"
-    ADMIN_EMAIL="user@localhost"
-    DEFAULT_ADMIN_PASS="$($PYTHON_BIN - <<'PY'
-import secrets
-print(secrets.token_urlsafe(16))
-PY
-)"
-    if [ -z "$DEFAULT_ADMIN_PASS" ]; then
-        DEFAULT_ADMIN_PASS="tmpPass!123"
-    fi
-
-    if [ -z "${AIDA_BOOTSTRAP_ADMIN_PASS:-}" ]; then
-        printf "Admin password for Taiga user '%s' (leave blank to auto-generate): " "$ADMIN_USER"
-        stty_state=$(stty -g 2>/dev/null || printf '')
-        if stty -echo 2>/dev/null; then
-            read -r ADMIN_PASS_INPUT
-            stty "$stty_state" 2>/dev/null || true
-            printf "\n"
-        else
-            read -r ADMIN_PASS_INPUT
-        fi
-        if [ -z "$ADMIN_PASS_INPUT" ]; then
-            ADMIN_PASS="$DEFAULT_ADMIN_PASS"
-            echo "Generated admin password automatically."
-        else
-            ADMIN_PASS="$ADMIN_PASS_INPUT"
-        fi
+    echo "Running full bootstrap via Python controller (destructive reset + start)..."
+    if command -v aida-bootstrap >/dev/null 2>&1; then
+        aida-bootstrap --bootstrap
     else
-        ADMIN_PASS="$AIDA_BOOTSTRAP_ADMIN_PASS"
-        echo "Using admin password provided via AIDA_BOOTSTRAP_ADMIN_PASS."
+        "$PYTHON_BIN" -m aidamatic.cli.bootstrap --bootstrap
     fi
-    if [ -z "$ADMIN_PASS" ]; then
-        ADMIN_PASS="$DEFAULT_ADMIN_PASS"
-        echo "Warning: Generated fallback admin password."
-    fi
-
-    if ! aida-setup --reset --force --yes --admin-user "$ADMIN_USER" --admin-email "$ADMIN_EMAIL" --admin-pass "$ADMIN_PASS"; then
-        echo "Bootstrap reset failed. Aborting."
-        exit 1
-    fi
-
-    echo "Starting AIDA (this may take several minutes)..."
-    if ! aida-start; then
-        echo "Bootstrap failed during aida-start. Check logs above." >&2
-        exit 1
-    fi
-
-    BOOTSTRAP_ENDED=$(date +%s)
-    ELAPSED=$((BOOTSTRAP_ENDED - BOOTSTRAP_STARTED))
-    printf "\nBootstrap complete in %02dm%02ds.\n" $((ELAPSED/60)) $((ELAPSED%60))
-    echo "Login to Taiga: http://localhost:9000"
-    echo "  username: $ADMIN_USER"
-    echo "  password: $ADMIN_PASS"
-    echo "Agent credentials (if provisioned) will be in .aida/identities.json"
-    exit 0
+    exit $?
 fi
 
 # Optional: initialize and start services if requested
@@ -219,7 +168,7 @@ if [ "$START" -eq 1 ]; then
     if command -v aida-start >/dev/null 2>&1; then
         aida-start || true
     else
-        "$PYTHON_BIN" -m aidamatic.cli.aidastart || true
+        "$PYTHON_BIN" -m aidamatic.cli.Right, so the biggest concern is the Aida Start application works unreliably. Seems like there are some race conditions involved. Let me give you that script too. || true
     fi
 fi
 

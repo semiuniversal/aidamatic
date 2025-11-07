@@ -20,7 +20,8 @@ dependencies = [
 	"python-dotenv>=1.0.1",
 	"anthropic>=0.30.0",
 	"fastapi>=0.111.0",
-	"uvicorn>=0.30.0"
+	"uvicorn>=0.30.0",
+	"rich>=13.7.0"
 ]
 
 [tool.hatch.metadata]
@@ -59,3 +60,4 @@ aida-doc = "aidamatic.bridge.cli:doc_cmd"
 aida-chat = "aidamatic.bridge.cli:chat_cmd"
 aida-task-next = "aidamatic.commands.task_next:main"
 aida-uninstall = "aidamatic.cli.aida_uninstall:main"
+ aida-bootstrap = "aidamatic.cli.bootstrap:main"
