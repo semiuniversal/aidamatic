@@ -485,6 +485,9 @@ def main(argv: list[str] | None = None) -> int:
     lw_thread = threading.Thread(target=_log_writer, daemon=True)
     lw_thread.start()
 
+    live = Live(render_group(), console=console, refresh_per_second=10)
+    live.start()
+
     # Unified log start markers
     _append_log("BOOTSTRAP start")
     _log_event("S0: Init", "bootstrap_start")
@@ -832,6 +835,7 @@ def main(argv: list[str] | None = None) -> int:
 
     status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
     live.update(render_group())
+    live.stop()
 
     console.print(f"[bold]Done in[/bold] {_elapsed_str(start_ts)}")
     console.print("Open Taiga:   http://localhost:9000")

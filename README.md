@@ -114,7 +114,7 @@ You rarely need this now that `./setup.sh --bootstrap` handles everything, but t
    uv pip install -e .  # or: pip install -e .
    ```
 3. Copy `docker/env.example` to `docker/.env` and tweak if you need custom ports/domains.
-4. Start Taiga manually with `aida-taiga-up` and follow the advanced helpers in the next section.
+4. Start the stack with `aida-bootstrap` (reset + start) or `aida-start` (no reset).
 
 ## Troubleshooting wait times
 
@@ -133,8 +133,8 @@ These are advanced/admin-oriented helpers used by `aida-setup` and `aida-start`.
 cp docker/env.example docker/.env
 # Edit docker/.env if needed (ports/hostnames)
 
-aida-taiga-up
-# later: aida-taiga-down
+aida-start
+# later: aida-stop
 ```
 
 ## Identities and profiles
@@ -155,24 +155,14 @@ Usage rules
 aida-setup --init
 aida-start
 
-# 2) Create a Kanban project (human user)
-AIDA_AUTH_PROFILE=user aida-setup-kanban --name "My App" --slug my-app
+# 2) Project creation is automatic in bootstrap (S4) using the repo folder name (Kanban enabled).
 
 # 3) Select the project for this workspace
 aida-task-select --slug my-app
 
 # 4) Work on items as the IDE agent
-AIDA_AUTH_PROFILE=ide aida-items-list --type issue
-# pick one (by id or ref):
-aida-item-select --type issue --id 123
-
-# 5) Operate via Bridge (per request profile)
-aida-item --profile ide --comment "Investigating now"
-aida-item --profile ide --status to=in_progress
-
-aida-task-next --profile ide
-
-aida-sync
+# Use the Bridge UI/workflows (VS Code integration) rather than CLI item operations.
+# The following CLI utilities have been removed to reduce duplication: items-list, item-select, item, task-next, sync.
 ```
 
 ## AIDA Bridge (local HTTP + CLI)
@@ -181,32 +171,7 @@ The Bridge listens on 127.0.0.1:8787 and is started by `aida-start`. All Bridge 
 
 ```bash
 # Current assignment (local)
-aida-item-select --type issue --id 123
-
-# Add a comment as the IDE agent
-#aida-item consolidates comment and status
- aida-item --profile ide --comment "Investigating now"
-
-# Change status as the IDE agent
- aida-item --profile ide --status to=in_progress
-
-# Suggest next item for a profile
- aida-task-next --profile ide
-
-# Sync outbox events to Taiga
- aida-sync
-
-# Docs inbox (local)
-# List docs (profile required for audit trail)
- aida-doc --profile ide --list
-# Add a text note
- aida-doc --profile ide --text "Design notes" --tag brief --name notes.md
-# Add a file
- aida-doc --profile ide --file ./mockup.png --tag ui
-
-# Chat skeleton (local)
- aida-chat --profile user --send "Kick off grooming for Docs inbox"
- aida-chat --profile user --thread --tail 20
+# Item/document/chat CLI utilities have been removed in favor of Bridge and future IDE integration.
 ```
 
 Advanced: You may call HTTP endpoints directly and pass `X-AIDA-Profile` yourself, but the CLIs are preferred.
@@ -217,14 +182,8 @@ Profiles authenticate independently and persist tokens locally in `.aida/auth.<p
 
 ```bash
 # Authenticate non-human profiles (no prompts)
-TAIGA_ADMIN_USER=ide TAIGA_ADMIN_PASSWORD='your-generated-pass' aida-taiga-auth --profile ide --switch-user
-TAIGA_ADMIN_USER=scrum TAIGA_ADMIN_PASSWORD='your-generated-pass' aida-taiga-auth --profile scrum --switch-user
-
-# Authenticate human user once, if desired (not stored)
-aida-taiga-auth --profile user --switch-user
-
-# Call Taiga API directly as a profile (advanced)
-AIDA_AUTH_PROFILE=ide aida-taiga-api GET /api/v1/projects
+# Authentication and project reconciliation are handled by `aida-bootstrap` during S4 via python-taiga.
+# Manual auth/profile commands have been removed to prevent drift.
 ```
 
 ## Project selection & listing
@@ -239,14 +198,14 @@ AIDA_AUTH_PROFILE=ide aida-projects-list --all
 AIDA_AUTH_PROFILE=ide aida-projects-list --tag aida:work
 
 # Select a project for the current session (writes .aida/assignment.json)
-aida-task-select --slug your-project-slug
+# Project selection happens implicitly via repo folder name during bootstrap; manual selection CLI removed.
 ```
 
 ## Items listing & selection
 
 ```bash
 # List items in the selected project (default: issues, assigned to you optional)
-aida-items-list --type issue --assigned-to-me
+# Use the Bridge UI to browse and select items; CLI listing removed.
 
 # Select an item by id or ref
 aida-item-select --type issue --id 123
@@ -270,10 +229,10 @@ AIDA_AUTH_PROFILE=user aida-setup-kanban --name "My App" --slug my-app
 aida-setup --reset --force
 
 # Low-level Taiga reset (advanced):
-#   aida-taiga-reset --admin-user "your_user" --admin-email you@example.com --admin-pass 'strong'
+#   aida-bootstrap  # run with --bootstrap to reset + start
 
 # Hard clean (data loss)
-aida-taiga-clean --force [--purge-local]
+# Use docker compose down -v manually if required; destructive cleans are not exposed as CLI.
 ```
 
 Data loss explained:
@@ -285,13 +244,7 @@ Data loss explained:
 
 ```bash
 # Export current project (pick by slug or id)
-aida-export --slug your-project-slug --output taiga-config.json --pretty
-
-# Dry-run import (prints plan)
-aida-import --input taiga-config.json
-
-# Apply import (creates project if missing)
-aida-import --input taiga-config.json --apply
+# Project export/import CLI removed. Migration utilities will be exposed via Bridge APIs in a future release.
 ```
 
 ## Smoke test Anthropic
