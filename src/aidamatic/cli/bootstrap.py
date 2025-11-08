@@ -232,35 +232,29 @@ def _ensure_compose_file() -> None:
 
 
 def _get_services_health() -> dict[str, str]:
-    """
-    Attempts to get the health status of all services defined in COMPOSE_FILE.
-    Returns a dictionary mapping service names to their health status.
-    """
-    health_status: dict[str, str] = {}
+    """Return service->health by parsing `docker compose ps --format json`."""
+    health: dict[str, str] = {}
     try:
-        r = subprocess.run([
-            "docker", "compose", "-f", str(COMPOSE_FILE), "ps", "--services"
-        ], capture_output=True, text=True)
-        services = r.stdout.strip().splitlines()
-        for service in services:
-            health_status[service] = "unknown"
+        p = subprocess.run([
+            "docker", "compose", "-f", str(COMPOSE_FILE), "ps", "--format", "json"
+        ], capture_output=True, text=True, timeout=10)
+        if p.returncode != 0 or not p.stdout:
+            return health
+        for line in p.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
-                r = subprocess.run([
-                    "docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-q", service,
-                    "--filter", "health=healthy",
-                    "--filter", "health=unhealthy"
-                ], capture_output=True, text=True)
-                if r.returncode == 0:
-                    if r.stdout.strip():
-                        health_status[service] = "healthy"
-                    elif r.stderr.strip():
-                        health_status[service] = "unhealthy"
-            except FileNotFoundError:
-                # Docker not available yet; back off and retry
-                time.sleep(0.5)
+                obj = json.loads(line)
+                svc = obj.get("Service") or obj.get("Name") or ""
+                h = obj.get("Health") or ""
+                if svc:
+                    health[svc] = h
+            except Exception:
+                continue
     except Exception:
         pass
-    return health_status
+    return health
 
 
 def _http_probe(url: str, timeout_s: float = 3.0) -> tuple[Optional[int], Optional[int]]:
@@ -300,32 +294,30 @@ def _ensure_taiga_user(username: str, password: str, email: str) -> None:
     """Create or update a Taiga user inside the taiga-back container.
     Makes the user a staff/superuser and sets the given password.
     """
-    script = (
-        "python - <<'PY'\n"
-        "from django.contrib.auth import get_user_model\n"
-        "U=get_user_model()\n"
-        f"username={repr(username)}\n"
-        f"email={repr(email)}\n"
-        f"password={repr(password)}\n"
-        "user, created = U.objects.get_or_create(username=username, defaults={'email': email})\n"
-        "user.email=email\n"
-        "user.is_superuser=True\n"
-        "user.is_staff=True\n"
-        "user.set_password(password)\n"
-        "user.save()\n"
-        "print('OK')\n"
-        "PY"
+    # Build a manage.py shell command executed via the container's venv
+    djangocmd = (
+        "cd /taiga-back && "
+        "/opt/venv/bin/python manage.py shell -c \""
+        "from django.contrib.auth import get_user_model; "
+        "U=get_user_model(); "
+        f"username={repr(username)}; email={repr(email)}; password={repr(password)}; "
+        "user, _ = U.objects.get_or_create(username=username, defaults={'email': email}); "
+        "user.email=email; user.is_superuser=True; user.is_staff=True; "
+        "user.set_password(password); user.save(); print('OK')\""
     )
-    try:
-        p = subprocess.run([
-            "docker", "compose", "-f", str(COMPOSE_FILE),
-            "exec", "-T", "taiga-back", "sh", "-lc", script
-        ], capture_output=True, text=True, timeout=60)
-        _append_log(f"ENSURE_USER rc={p.returncode} out={p.stdout.strip()} err={p.stderr.strip()}")
-        if p.returncode != 0:
-            raise RuntimeError(f"ensure user failed rc={p.returncode}")
-    except Exception as e:
-        raise RuntimeError(f"ensure user error: {e}")
+    last_err = None
+    for svc in ("taiga_back", "taiga-back"):
+        try:
+            p = subprocess.run([
+                "docker", "compose", "-f", str(COMPOSE_FILE),
+                "exec", "-T", svc, "sh", "-lc", djangocmd
+            ], capture_output=True, text=True, timeout=120)
+            if p.returncode == 0 and "OK" in (p.stdout or ""):
+                return
+            last_err = f"rc={p.returncode} out={p.stdout.strip()} err={p.stderr.strip()}"
+        except Exception as e:
+            last_err = str(e)
+    raise RuntimeError(f"ensure user failed: {last_err}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -649,9 +641,9 @@ def main(argv: list[str] | None = None) -> int:
     prev_health: dict[str, str] = {}
     while time.time() < s1_deadline:
         health = _get_services_health()
-        pg = (health.get("postgres") or "").lower()
-        rb = (health.get("rabbit") or "").lower()
-        rd = (health.get("redis") or "").lower()
+        pg = (health.get("taiga_postgres") or health.get("postgres") or "").lower()
+        rb = (health.get("taiga_rabbit") or health.get("rabbit") or "").lower()
+        rd = (health.get("taiga_redis") or health.get("redis") or "").lower()
         ok = ("healthy" in pg) and ("healthy" in rb) and ("healthy" in rd)
         latest = _latest_line(line_queue)
         if latest and latest != last_log_line:
