@@ -18,5 +18,9 @@ docker/.env.local
 __pycache__/
 *.pyc
 
-# Local minimax suggestions
-minimax/
+
+# auth files for local taiga
+auth.ide.json
+auth.scrum.json
+auth.user.json
+
