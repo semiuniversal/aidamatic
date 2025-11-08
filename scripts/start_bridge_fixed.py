@@ -11,6 +11,7 @@ import time
 import requests
 from pathlib import Path
 
+
 def start_bridge_fixed():
     """Start the AIDA Bridge server using corrected module paths."""
     print("🚀 Starting AIDA Bridge with fixed module paths...")
@@ -24,12 +25,12 @@ def start_bridge_fixed():
     startup_methods = [
         {
             "name": "Module import (corrected path)",
-            "cmd": [sys.executable, "-m", "src.aidamatic.bridge.app"],
+            "cmd": [sys.executable, "-m", "aidamatic.bridge.app"],
             "description": "Uses correct module path with PYTHONPATH set"
         },
         {
             "name": "Direct FastAPI import",
-            "cmd": [sys.executable, "-c", "from src.aidamatic.bridge.app import run; run()"],
+            "cmd": [sys.executable, "-c", "from aidamatic.bridge.app import run; run()"],
             "description": "Direct import and run with correct module path"
         },
         {
@@ -103,6 +104,7 @@ def start_bridge_fixed():
     
     print("❌ All startup methods failed!")
     return None
+
 
 def test_bridge_endpoints(bridge_proc):
     """Test the main bridge endpoints to verify functionality."""

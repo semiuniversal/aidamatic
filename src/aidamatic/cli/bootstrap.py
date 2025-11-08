@@ -20,6 +20,10 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich.text import Text
 from rich.layout import Layout
 import re
+import json
+from collections import defaultdict
+import random
+import requests
 
 
 REPO_ROOT = Path.cwd()
@@ -170,22 +174,10 @@ def _poll_last_lines(line_queue: queue.Queue[str], stop_event: threading.Event, 
                     if "taiga_back" in s or "taiga-back" in s:
                         analyzer.process_line(s)
             except Exception:
+                # Ignore transient errors and continue polling
                 pass
         # Poll interval
         time.sleep(1.0)
-        # If we exit the with-block without stop_event, retry after a short backoff
-        if not stop_event.is_set():
-            time.sleep(1.0)
-    cmd = ["docker", "logs", "-f", "--tail", "50", cid]
-    try:
-        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:
-            for line in iter(proc.stdout.readline, ""):
-                if stop_event.is_set():
-                    break
-                if line:
-                    line_queue.put(line.rstrip())
-    except FileNotFoundError:
-        return
 
 
 def _latest_line(q: queue.Queue[str]) -> str:
@@ -236,6 +228,71 @@ def _ensure_compose_file() -> None:
     if not COMPOSE_FILE.exists():
         print(f"Compose file not found at {COMPOSE_FILE}", file=sys.stderr)
         raise SystemExit(2)
+
+
+def _get_services_health() -> dict[str, str]:
+    """
+    Attempts to get the health status of all services defined in COMPOSE_FILE.
+    Returns a dictionary mapping service names to their health status.
+    """
+    health_status: dict[str, str] = {}
+    try:
+        r = subprocess.run([
+            "docker", "compose", "-f", str(COMPOSE_FILE), "ps", "--services"
+        ], capture_output=True, text=True)
+        services = r.stdout.strip().splitlines()
+        for service in services:
+            health_status[service] = "unknown"
+            try:
+                r = subprocess.run([
+                    "docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-q", service,
+                    "--filter", "health=healthy",
+                    "--filter", "health=unhealthy"
+                ], capture_output=True, text=True)
+                if r.returncode == 0:
+                    if r.stdout.strip():
+                        health_status[service] = "healthy"
+                    elif r.stderr.strip():
+                        health_status[service] = "unhealthy"
+            except FileNotFoundError:
+                # Docker not available yet; back off and retry
+                time.sleep(0.5)
+    except Exception:
+        pass
+    return health_status
+
+
+def _http_probe(url: str, timeout_s: float = 3.0) -> tuple[Optional[int], Optional[int]]:
+    """Return (status_code, latency_ms) for a GET probe or (None, None) on error."""
+    try:
+        t0 = time.time()
+        resp = requests.get(url, timeout=timeout_s)
+        dt = int((time.time() - t0) * 1000)
+        return resp.status_code, dt
+    except Exception:
+        return None, None
+
+
+class TokenBucket:
+    def __init__(self, rate_per_s: float = 1.0, burst: int = 3) -> None:
+        self.rate_per_s = max(0.001, rate_per_s)
+        self.capacity = max(1.0, float(burst))
+        self.tokens = self.capacity
+        self.last_refill = time.time()
+
+    def allow(self, cost: float = 1.0) -> bool:
+        now = time.time()
+        elapsed = now - self.last_refill
+        self.last_refill = now
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.rate_per_s)
+        if self.tokens >= cost:
+            self.tokens -= cost
+            return True
+        return False
+
+def _sleep_with_jitter(base_s: float, low_ms: int = 100, high_ms: int = 300) -> None:
+    jitter = random.uniform(low_ms / 1000.0, high_ms / 1000.0)
+    time.sleep(max(0.0, base_s) + jitter)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -289,119 +346,492 @@ def main(argv: list[str] | None = None) -> int:
     )
     task_id = progress.add_task("Initializing...", total=100)
 
-    # Live layout: progress bar + status line
+    # Live layout: progress bar + state + status + log + evidence
     status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
-    log_line = Text("Log: (waiting for container logs…)")
+    last_log_line: str = ""
+    state_name: str = "S0: Init"
+    state_started: float = time.time()
+    evidence_text: Text = Text("")
+    backend_last_seen_ts: Optional[float] = None
+    event_counters: dict[str, int] = defaultdict(int)
+    http_bucket = TokenBucket(rate_per_s=1.0, burst=3)
+    log_queue: "queue.Queue[str]" = queue.Queue()
+
+    def _ts() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def _append_log(line: str) -> None:
+        try:
+            log_queue.put_nowait(f"[{_ts()}] {line}")
+        except Exception:
+            pass
+
+    def _read_last_log_line() -> Optional[str]:
+        try:
+            p = Path(BOOTSTRAP_LOG)
+            if not p.exists():
+                return None
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                # Read all and take last non-empty; file is flushed per line by writer
+                lines = f.readlines()
+                for line in reversed(lines):
+                    s = line.strip()
+                    if s:
+                        return s
+            return None
+        except Exception:
+            return None
+
+    def _log_event(state: str, key: str, **fields: object) -> None:
+        attempt = event_counters.get(key, 0) + 1
+        event_counters[key] = attempt
+        kv = " ".join(f"{k}={fields[k]}" for k in fields)
+        _append_log(f"EVENT state={state} key={key} attempt={attempt} {kv}")
+
+    def _write_progress_json() -> None:
+        try:
+            prog = {
+                "timestamp": _ts(),
+                "state": state_name,
+                "counters": dict(event_counters),
+            }
+            pj = Path(BOOTSTRAP_LOG).parent / "progress.json"
+            with open(pj, "w", encoding="utf-8") as f:
+                json.dump(prog, f, indent=2)
+        except Exception:
+            pass
+
+    def _set_state(name: str) -> None:
+        nonlocal state_name, state_started
+        if state_name != name:
+            state_name = name
+            state_started = time.time()
+            _append_log(f"STATE -> {name}")
+            _log_event(name, "state_enter")
+            _write_progress_json()
+
+    def _fmt_evidence(s: str) -> Text:
+        return Text(s)
+
+    def _get_taiga_back_container_id() -> Optional[str]:
+        try:
+            p = subprocess.run([
+                "docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-q", "taiga-back"
+            ], capture_output=True, text=True, timeout=10)
+            cid = p.stdout.strip()
+            return cid or None
+        except Exception:
+            return None
+
+    def _taiga_back_cpu_percent(cid: Optional[str]) -> Optional[float]:
+        if not cid:
+            return None
+        try:
+            p = subprocess.run([
+                "docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}", cid
+            ], capture_output=True, text=True, timeout=5)
+            out = (p.stdout or "").strip().replace("%", "").strip()
+            return float(out) if out else None
+        except Exception:
+            return None
+
+    def _taiga_back_tcp_open() -> Optional[bool]:
+        try:
+            script = (
+                "import socket,sys; s=socket.socket(); s.settimeout(1); "
+                "sys.exit(0 if s.connect_ex(('127.0.0.1',8000))==0 else 1)"
+            )
+            p = subprocess.run([
+                "docker", "compose", "-f", str(COMPOSE_FILE), "exec", "-T", "taiga-back",
+                "python", "-c", script
+            ], capture_output=True, text=True, timeout=6)
+            # returncode 0 means port open
+            return p.returncode == 0
+        except Exception:
+            return None
+
     def render_group() -> Panel:
+        state_elapsed = int(time.time() - state_started)
+        state_text = Text(f"State: {state_name} ({state_elapsed}s)")
+        last_from_file = _read_last_log_line()
+        log_text = Text(f"Log: {last_from_file[-120:]}") if last_from_file else Text("Log: (waiting for container logs…)")
+        ev_text = evidence_text if evidence_text.plain else Text("Evidence: …")
         return Panel(
-            Group(progress, status_line, log_line),
+            Group(progress, state_text, status_line, ev_text, log_text),
             title="AIDA Bootstrap"
         )
 
     used_admin_pass: Optional[str] = None
 
-    with Live(render_group(), console=console, refresh_per_second=10) as live:
-        # Unified log file
-        with open(BOOTSTRAP_LOG, "w", encoding="utf-8") as lf:
-            # Phase: Reset (optional) — run asynchronously and show progress
-            if do_reset:
-                progress.update(task_id, description="Resetting Taiga data and local state", completed=0)
-                cmd = [
-                    "aida-setup", "--reset", "--force", "--yes",
-                    "--admin-user", args.admin_user,
-                    "--admin-email", args.admin_email,
-                ]
-                if args.admin_pass:
-                    used_admin_pass = args.admin_pass
-                else:
-                    used_admin_pass = secrets.token_urlsafe(16)
-                cmd.extend(["--admin-pass", used_admin_pass])
-                reset_proc = subprocess.Popen(cmd, stdout=lf, stderr=lf)
-                deadline = time.time() + int(args.timeout)
-                while reset_proc.poll() is None and time.time() < deadline:
-                    cur = min(15, int(progress.tasks[task_id].completed) + 1)
-                    progress.update(task_id, completed=cur)
-                    status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
-                    # If migrations have begun, advance to next phase visuals even if reset still running
-                    if analyzer.migrations_applied > 0 and progress.tasks[task_id].completed < 25:
-                        progress.update(task_id, completed=25, description="TX1: Gateway check (GET / → 200)")
-                    live.update(render_group())
-                    time.sleep(0.3)
-                rc_reset = reset_proc.poll()
-                if rc_reset not in (0, None):
-                    progress.update(task_id, completed=15, description=f"Reset failed (code {rc_reset}) — see .aida/bootstrap-start.log")
-                    status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
-                    live.update(render_group())
-                    return 1
-                progress.update(task_id, completed=15)
-                status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
-                live.update(render_group())
-
-            # Phase: Start services (aida-start) with logs redirected
-            progress.update(task_id, description="Starting services (Taiga + Bridge)", completed=20)
-            start_proc = subprocess.Popen(["aida-start"], stdout=lf, stderr=lf)
-            progress.update(task_id, completed=max(25, int(progress.tasks[task_id].completed)))
-            status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
-            live.update(render_group())
-
-        # Phase: TX1 - Gateway /
-        progress.update(task_id, description="TX1: Gateway check (GET / → 200)", completed=30)
-        deadline = time.time() + int(args.timeout)
-        while time.time() < deadline and not readiness.root_ok:
-            _poll_readiness(readiness)
-            latest = _latest_line(line_queue)
-            cur = min(60, progress.tasks[task_id].completed + 1)
-            progress.update(task_id, completed=cur, description=f"Gateway check: / → {('200 OK' if readiness.root_ok else '...')} | {latest[-80:] if latest else ''}")
-            status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
-            if latest:
-                log_line = Text(f"Log: {latest[-120:]}")
-            else:
-                # Keep last shown line; do not revert to placeholder
-                pass
-            live.update(render_group())
-            time.sleep(1.0)
-
-        # Phase: TX2 - API /api/v1/projects
-        progress.update(task_id, description="TX2: API check (GET /api/v1/projects → 200/401/403)", completed=65)
-        while time.time() < deadline and not readiness.api_ok:
-            _poll_readiness(readiness)
-            latest = _latest_line(line_queue)
-            cur = min(85, progress.tasks[task_id].completed + 1)
-            # Show exact status value when possible for clarity
-            status_val = _http_status(f"{GATEWAY_URL}/api/v1/projects")
-            status_txt = status_val if status_val is not None else "..."
-            progress.update(task_id, completed=cur, description=f"API check: /api/v1/projects → {status_txt} | {latest[-80:] if latest else ''}")
-            status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
-            if latest:
-                log_line = Text(f"Log: {latest[-120:]}")
-            live.update(render_group())
-            time.sleep(1.0)
-
-        # Phase: TX4 - Bridge health
-        progress.update(task_id, description="TX4: Bridge check (GET /health → 200)", completed=86)
-        while time.time() < deadline and not readiness.bridge_ok:
-            _poll_readiness(readiness)
-            latest = _latest_line(line_queue)
-            cur = min(95, progress.tasks[task_id].completed + 1)
-            progress.update(task_id, completed=cur, description=f"Bridge check: /health → {('200' if readiness.bridge_ok else '...')} | {latest[-80:] if latest else ''}")
-            status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
-            if latest:
-                log_line = Text(f"Log: {latest[-120:]}")
-            live.update(render_group())
-            time.sleep(1.0)
-
-        stop_event.set()
-
-        rc = start_proc.wait()
-        if not (readiness.gateway_ready and readiness.bridge_ok):
-            progress.update(task_id, completed=100, description="Bootstrap finished with warnings — see .aida/bootstrap-start.log")
-        elif rc != 0:
-            progress.update(task_id, completed=100, description=f"aida-start exited with {rc} — see .aida/bootstrap-start.log")
-        else:
-            progress.update(task_id, completed=100, description="All services ready — Taiga and Bridge are up")
-
+    def _fail(rc: int) -> int:
+        progress.update(task_id, completed=100, description="Bootstrap failed — see .aida/bootstrap-start.log")
         status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
         live.update(render_group())
+        return rc
+
+    # Single writer to ensure strict ordering across threads
+    def _log_writer() -> None:
+        try:
+            with open(BOOTSTRAP_LOG, "w", encoding="utf-8") as _f:
+                while not stop_event.is_set() or not log_queue.empty():
+                    try:
+                        line = log_queue.get(timeout=0.5)
+                    except Exception:
+                        continue
+                    _f.write(line + "\n")
+                    _f.flush()
+        except Exception:
+            pass
+    lw_thread = threading.Thread(target=_log_writer, daemon=True)
+    lw_thread.start()
+
+    # Unified log start markers
+    _append_log("BOOTSTRAP start")
+    _log_event("S0: Init", "bootstrap_start")
+    _write_progress_json()
+    # Phase: Reset (optional) — run asynchronously and show progress
+    if do_reset:
+        _set_state("S0: Reset")
+        progress.update(task_id, description="Resetting Taiga data and local state", completed=0)
+        cmd = [
+            "aida-setup", "--reset", "--force", "--yes",
+            "--admin-user", args.admin_user,
+            "--admin-email", args.admin_email,
+        ]
+        if args.admin_pass:
+            used_admin_pass = args.admin_pass
+        else:
+            used_admin_pass = secrets.token_urlsafe(16)
+        cmd.extend(["--admin-pass", used_admin_pass])
+        _append_log("RESET start")
+        _log_event("S0: Reset", "reset_start")
+        reset_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        reset_warned: bool = False
+        def _read_reset(stream):
+            nonlocal reset_warned, last_log_line, backend_last_seen_ts
+            for raw in stream:
+                line = raw.rstrip("\n")
+                _append_log(f"RESET: {line}")
+                last_log_line = line
+                if "taiga-back" in line or "taiga_back" in line:
+                    backend_last_seen_ts = time.time()
+                if "Applying" in line and "OK" in line:
+                    _log_event("S0: Reset", "migration_applied")
+                    _write_progress_json()
+                if line.lower().startswith("creating user "):
+                    _log_event("S0: Reset", "user_seeded")
+                    _write_progress_json()
+                if "Identity reconcile skipped" in line or "did not become ready in time" in line:
+                    reset_warned = True
+        tr_out = threading.Thread(target=_read_reset, args=(reset_proc.stdout,), daemon=True)
+        tr_err = threading.Thread(target=_read_reset, args=(reset_proc.stderr,), daemon=True)
+        tr_out.start(); tr_err.start()
+        deadline_global = time.time() + int(args.timeout)
+        while reset_proc.poll() is None and time.time() < deadline_global:
+            cur = min(15, int(progress.tasks[task_id].completed) + 1)
+            progress.update(task_id, completed=cur)
+            status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+            latest = _latest_line(line_queue)
+            if latest and latest != last_log_line:
+                last_log_line = latest
+                if "taiga-back" in latest or "taiga_back" in latest:
+                    backend_last_seen_ts = time.time()
+            if analyzer.migrations_applied > 0 and progress.tasks[task_id].completed < 25:
+                progress.update(task_id, completed=25, description="Reset: migrations running")
+            evidence_text = _fmt_evidence("Evidence: reset running…")
+            _log_event("S0: Reset", "tick")
+            _write_progress_json()
+            live.update(render_group())
+            time.sleep(0.3)
+        rc_reset = reset_proc.poll()
+        if rc_reset not in (0, None):
+            progress.update(task_id, completed=15, description=f"Reset failed (code {rc_reset}) — see .aida/bootstrap-start.log")
+            status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+            evidence_text = _fmt_evidence("Evidence: reset failed")
+            _append_log(f"RESET fail code={rc_reset}")
+            _log_event("S0: Reset", "reset_fail", code=rc_reset)
+            _write_progress_json()
+            live.update(render_group())
+            return _fail(1)
+        if reset_warned:
+            progress.update(task_id, completed=15, description="Reset failed — identity reconcile skipped (backend auth not ready)")
+            status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+            _append_log("RESET fail reconcile skipped")
+            _log_event("S0: Reset", "reset_fail_reconcile")
+            _write_progress_json()
+            live.update(render_group())
+            return _fail(2)
+        progress.update(task_id, completed=15)
+        status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+        _append_log("RESET complete")
+        _log_event("S0: Reset", "reset_complete")
+        _write_progress_json()
+        live.update(render_group())
+
+    # Phase: Start services (aida-start) with logs redirected
+    _set_state("S1: Infra health")
+    progress.update(task_id, description="Starting services (Taiga + Bridge)", completed=20)
+    start_proc = subprocess.Popen(
+        ["aida-start", "--no-reset"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    def _read_start(stream):
+        nonlocal last_log_line
+        for raw in stream:
+            line = raw.rstrip("\n")
+            _append_log(f"START: {line}")
+            last_log_line = line
+    ts_out = threading.Thread(target=_read_start, args=(start_proc.stdout,), daemon=True)
+    ts_err = threading.Thread(target=_read_start, args=(start_proc.stderr,), daemon=True)
+    ts_out.start(); ts_err.start()
+    _append_log("START services")
+    _log_event("S1: Infra health", "start_services")
+    _write_progress_json()
+    progress.update(task_id, completed=max(25, int(progress.tasks[task_id].completed)))
+    status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+    latest = _latest_line(line_queue)
+    if latest and latest != last_log_line:
+        last_log_line = latest
+        if "taiga-back" in latest or "taiga_back" in latest:
+            backend_last_seen_ts = time.time()
+    evidence_text = _fmt_evidence("Evidence: starting services")
+    live.update(render_group())
+
+    # S1: Infra-healthy (postgres/rabbit/redis)
+    _set_state("S1: Infra health")
+    progress.update(task_id, description="S1: Waiting for infra health (postgres/rabbit/redis)", completed=28)
+    s1_deadline = time.time() + 180
+    prev_health: dict[str, str] = {}
+    while time.time() < s1_deadline:
+        health = _get_services_health()
+        pg = (health.get("postgres") or "").lower()
+        rb = (health.get("rabbit") or "").lower()
+        rd = (health.get("redis") or "").lower()
+        ok = ("healthy" in pg) and ("healthy" in rb) and ("healthy" in rd)
+        latest = _latest_line(line_queue)
+        if latest and latest != last_log_line:
+            last_log_line = latest
+            if "taiga-back" in latest or "taiga_back" in latest:
+                backend_last_seen_ts = time.time()
+        progress.update(task_id, description=f"S1: Infra health — postgres={pg or 'unknown'} rabbit={rb or 'unknown'} redis={rd or 'unknown'}", completed=30 if not ok else 35)
+        status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+        evidence_text = _fmt_evidence("Evidence: infra checks running")
+        # Log transitions to healthy once per service
+        for svc, status in (("postgres", pg), ("rabbit", rb), ("redis", rd)):
+            if prev_health.get(svc) != status and status:
+                _log_event("S1: Infra health", f"{svc}_{status}")
+        prev_health = {"postgres": pg, "rabbit": rb, "redis": rd}
+        _write_progress_json()
+        live.update(render_group())
+        if ok:
+            _append_log(f"S1 infra healthy postgres={pg or 'unknown'} rabbit={rb or 'unknown'} redis={rd or 'unknown'}")
+            break
+        time.sleep(1.0)
+
+    # S2: Backend starting — deterministic probes
+    _set_state("S2: Backend starting")
+    s2_deadline = time.time() + 300
+    while time.time() < s2_deadline:
+        t0 = time.time()
+        tcp_open = _taiga_back_tcp_open()
+        dt = int((time.time() - t0) * 1000)
+        cid = _get_taiga_back_container_id()
+        cpu = _taiga_back_cpu_percent(cid)
+        mig = analyzer.migrations_applied
+        age = int(time.time() - backend_last_seen_ts) if backend_last_seen_ts else None
+        latest = _latest_line(line_queue)
+        if latest and latest != last_log_line:
+            last_log_line = latest
+            if "taiga-back" in latest or "taiga_back" in latest:
+                backend_last_seen_ts = time.time()
+        ev_parts = []
+        ev_parts.append(f"tcp:8000={'open' if tcp_open else 'closed' if tcp_open is not None else 'unknown'}")
+        ev_parts.append(f"cpu={cpu:.1f}%" if cpu is not None else "cpu=…")
+        ev_parts.append(f"migrations={mig}")
+        ev_parts.append(f"backend_log_age={age}s" if age is not None else "backend_log_age=…")
+        evidence_text = _fmt_evidence("Evidence: " + ", ".join(ev_parts))
+        _log_event("S2: Backend starting", "tcp_check", open=bool(tcp_open) if tcp_open is not None else None, ms=dt, cpu=cpu if cpu is not None else "…", age_s=age if age is not None else "…")
+        _write_progress_json()
+        status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+        progress.update(task_id, completed=max(38, int(progress.tasks[task_id].completed)))
+        live.update(render_group())
+        if tcp_open:
+            _append_log("S2 backend tcp:8000 open")
+            break
+        # Stall rule: if no new backend logs for >60s and cpu low for 30s, abort early
+        if (age is not None and age > 60) and (cpu is not None and cpu < 5.0):
+            progress.update(task_id, description="Backend appears stalled — aborting with diagnostics")
+            live.update(render_group())
+            _append_log(f"S2 stall backend_log_age={age}s cpu={(cpu if cpu is not None else '…')}")
+            _log_event("S2: Backend starting", "stall", age_s=age, cpu=cpu)
+            _write_progress_json()
+            return _fail(10)
+        time.sleep(1.0)
+    else:
+        progress.update(task_id, description="S2 timeout — backend did not open tcp:8000")
+        live.update(render_group())
+        _append_log("S2 timeout no tcp:8000")
+        _log_event("S2: Backend starting", "timeout")
+        _write_progress_json()
+        return _fail(11)
+
+    # Phase: TX1 - Gateway /
+    _set_state("S3: Gateway")
+    progress.update(task_id, description="TX1: Gateway check (GET / → 200)", completed=40)
+    deadline = time.time() + int(args.timeout)
+    last_code_root: Optional[int] = None
+    backoff_s: float = 1.0
+    while time.time() < deadline and not readiness.root_ok:
+        # rate-limit probes; rely on logs otherwise
+        if not http_bucket.allow():
+            _sleep_with_jitter(0.2)
+            continue
+        latest = _latest_line(line_queue)
+        if latest and latest != last_log_line:
+            last_log_line = latest
+            if "taiga-back" in latest or "taiga_back" in latest:
+                backend_last_seen_ts = time.time()
+        cur = min(60, progress.tasks[task_id].completed + 1)
+        code_root, ms_root = _http_probe(f"{GATEWAY_URL}/")
+        if code_root is not None and code_root != last_code_root:
+            _append_log(f"TX1 / -> {code_root}")
+        _log_event("S3: Gateway", "http_probe", url="/", code=code_root if code_root is not None else "…", ms=ms_root if ms_root is not None else "…")
+        _write_progress_json()
+        last_code_root = code_root if code_root is not None else last_code_root
+        code_txt = code_root if code_root is not None else "..."
+        progress.update(task_id, completed=cur, description=f"TX1: / → {code_txt} | {last_log_line[-80:] if last_log_line else ''}")
+        evidence_text = _fmt_evidence(f"Evidence: / → {code_txt}")
+        status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+        live.update(render_group())
+        # set readiness and adaptive backoff
+        if code_root == 200:
+            readiness.root_ok = True
+            break
+        if code_root in (502, 504):
+            backoff_s = max(backoff_s, 15.0)
+        else:
+            backoff_s = min(10.0, backoff_s * 2.0)
+        _sleep_with_jitter(backoff_s)
+    if not readiness.root_ok:
+        progress.update(task_id, description=f"Gateway not ready — last code {last_code_root if last_code_root is not None else '…'}")
+        live.update(render_group())
+        _append_log(f"S3 fail last_code={last_code_root if last_code_root is not None else '…'}")
+        _log_event("S3: Gateway", "fail", last_code=last_code_root if last_code_root is not None else "…")
+        _write_progress_json()
+        return _fail(12)
+
+    # Phase: TX2 - API /api/v1/projects (or users fallback)
+    _set_state("S4: Reconcile (API ready)")
+    progress.update(task_id, description="TX2: API check (GET /api/v1/projects → 200/401/403)", completed=65)
+    last_api_code: Optional[int] = None
+    s4_attempts: int = 0
+    s4_backoff_s: float = 1.0
+    while time.time() < deadline and not readiness.api_ok:
+        if not http_bucket.allow():
+            _sleep_with_jitter(0.2)
+            continue
+        latest = _latest_line(line_queue)
+        if latest and latest != last_log_line:
+            last_log_line = latest
+            if "taiga-back" in latest or "taiga_back" in latest:
+                backend_last_seen_ts = time.time()
+        cur = min(85, progress.tasks[task_id].completed + 1)
+        s4_attempts += 1
+        status_val, ms_proj = _http_probe(f"{GATEWAY_URL}/api/v1/projects")
+        if status_val is None:
+            status_val, ms_proj = _http_probe(f"{GATEWAY_URL}/api/v1/users")
+        if status_val is not None and status_val != last_api_code:
+            _append_log(f"TX2 /api ready -> {status_val}")
+        _log_event("S4: Reconcile (API ready)", "http_probe", url="/api", code=status_val if status_val is not None else "…", ms=ms_proj if ms_proj is not None else "…")
+        _write_progress_json()
+        last_api_code = status_val if status_val is not None else last_api_code
+        status_txt = status_val if status_val is not None else "..."
+        progress.update(task_id, completed=cur, description=f"TX2: /api/v1/projects → {status_txt} | {last_log_line[-80:] if last_log_line else ''}")
+        evidence_text = _fmt_evidence(f"Evidence: /api ready → {status_txt}")
+        status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+        live.update(render_group())
+        if status_val in (200, 401, 403):
+            readiness.api_ok = True
+            break
+        if s4_attempts >= 20:
+            break
+        # adaptive backoff with jitter
+        if status_val in (502, 504):
+            s4_backoff_s = max(s4_backoff_s, 15.0)
+        else:
+            s4_backoff_s = min(10.0, s4_backoff_s * 2.0)
+        _sleep_with_jitter(s4_backoff_s)
+    if not readiness.api_ok:
+        progress.update(task_id, description=f"API not ready — last code {last_api_code if last_api_code is not None else '…'}")
+        live.update(render_group())
+        _append_log(f"S4 fail last_code={last_api_code if last_api_code is not None else '…'}")
+        _log_event("S4: Reconcile (API ready)", "fail", last_code=last_api_code if last_api_code is not None else "…")
+        _write_progress_json()
+        return _fail(13)
+
+    # Phase: TX4 - Bridge health
+    _set_state("S5: Bridge")
+    progress.update(task_id, description="TX4: Bridge check (GET /health → 200)", completed=86)
+    last_bridge_code: Optional[int] = None
+    s5_backoff_seq = [2.0, 3.0, 5.0]
+    s5_idx = 0
+    while time.time() < deadline and not readiness.bridge_ok:
+        if not http_bucket.allow():
+            _sleep_with_jitter(0.2)
+            continue
+        latest = _latest_line(line_queue)
+        if latest and latest != last_log_line:
+            last_log_line = latest
+        cur = min(95, progress.tasks[task_id].completed + 1)
+        code_b, ms_b = _http_probe(BRIDGE_HEALTH)
+        if code_b is not None and code_b != last_bridge_code:
+            _append_log(f"TX4 /health -> {code_b}")
+        _log_event("S5: Bridge", "http_probe", url="/health", code=code_b if code_b is not None else "…", ms=ms_b if ms_b is not None else "…")
+        _write_progress_json()
+        if code_b is not None:
+            last_bridge_code = code_b
+        codeb_txt = code_b if code_b is not None else "..."
+        progress.update(task_id, completed=cur, description=f"TX4: /health → {codeb_txt} | {last_log_line[-80:] if last_log_line else ''}")
+        evidence_text = _fmt_evidence(f"Evidence: /health → {codeb_txt}")
+        status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+        live.update(render_group())
+        if code_b == 200:
+            readiness.bridge_ok = True
+            break
+        s5_idx = min(s5_idx + 1, len(s5_backoff_seq) - 1)
+        _sleep_with_jitter(s5_backoff_seq[s5_idx])
+    if not readiness.bridge_ok:
+        progress.update(task_id, description=f"Bridge not ready — last code {last_bridge_code if last_bridge_code is not None else '…'}")
+        live.update(render_group())
+        _append_log(f"S5 fail last_code={last_bridge_code if last_bridge_code is not None else '…'}")
+        _log_event("S5: Bridge", "fail", last_code=last_bridge_code if last_bridge_code is not None else "…")
+        _write_progress_json()
+        return _fail(14)
+
+    _append_log("BOOTSTRAP success")
+    _log_event("S5: Bridge", "success")
+    _write_progress_json()
+    stop_event.set()
+
+    rc = start_proc.wait()
+    if not (readiness.gateway_ready and readiness.bridge_ok):
+        progress.update(task_id, completed=100, description="Bootstrap finished with warnings — see .aida/bootstrap-start.log")
+    elif rc != 0:
+        progress.update(task_id, completed=100, description=f"aida-start exited with {rc} — see .aida/bootstrap-start.log")
+    else:
+        progress.update(task_id, completed=100, description="All services ready — Taiga and Bridge are up")
+
+    status_line = analyzer.render_status(_elapsed_str(start_ts), readiness)
+    live.update(render_group())
 
     console.print(f"[bold]Done in[/bold] {_elapsed_str(start_ts)}")
     console.print("Open Taiga:   http://localhost:9000")

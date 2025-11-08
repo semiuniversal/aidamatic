@@ -128,7 +128,7 @@ def start_bridge_background() -> None:
 		env = os.environ.copy()
 		root = Path.cwd()
 		env["PYTHONPATH"] = f"{root}:{root / 'src'}"
-		proc = subprocess.Popen([sys.executable, "-m", "src.aidamatic.bridge.app"], stdout=logf, stderr=logf, env=env)
+		proc = subprocess.Popen([sys.executable, "-m", "aidamatic.bridge.app"], stdout=logf, stderr=logf, env=env)
 		BRIDGE_PID.write_text(str(proc.pid))
 	if not wait_for_bridge():
 		print("Warning: AIDA Bridge did not become ready on http://127.0.0.1:8787/health within timeout.")
@@ -162,7 +162,7 @@ def main() -> int:
 
 	# Ensure identities and tokens are reconciled post-start
 	try:
-		from src.aidamatic.identity.reconcile import wait_for_backend_ready, reconcile_and_verify
+		from aidamatic.identity.reconcile import wait_for_backend_ready, reconcile_and_verify
 		wait_for_backend_ready()
 		reconcile_and_verify()
 	except Exception as e:
