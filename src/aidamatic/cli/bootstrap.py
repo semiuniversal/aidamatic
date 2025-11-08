@@ -320,6 +320,69 @@ def _ensure_taiga_user(username: str, password: str, email: str) -> None:
     raise RuntimeError(f"ensure user failed: {last_err}")
 
 
+def _api_get(path: str, token: str, params: dict | None = None) -> requests.Response:
+    headers = {"Authorization": f"Bearer {token}"}
+    return requests.get(f"{GATEWAY_URL}{path}", headers=headers, params=params or {}, timeout=5)
+
+
+def _api_post(path: str, token: str, json_body: dict) -> requests.Response:
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    return requests.post(f"{GATEWAY_URL}{path}", headers=headers, json=json_body, timeout=5)
+
+
+def _api_patch(path: str, token: str, json_body: dict) -> requests.Response:
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    return requests.patch(f"{GATEWAY_URL}{path}", headers=headers, json=json_body, timeout=5)
+
+
+def _get_user_id_by_username(username: str, token: str) -> Optional[int]:
+    # Try filter; fallback to full list
+    r = _api_get("/api/v1/users", token, params={"username": username})
+    if r.ok:
+        data = r.json()
+        if isinstance(data, list) and data:
+            return int(data[0].get("id"))
+    r = _api_get("/api/v1/users", token, params={})
+    if r.ok:
+        for u in r.json():
+            if u.get("username") == username:
+                return int(u.get("id"))
+    return None
+
+
+def _get_role_ids(project_id: int, token: str) -> tuple[Optional[int], Optional[int]]:
+    admin_id: Optional[int] = None
+    member_id: Optional[int] = None
+    r = _api_get("/api/v1/roles", token, params={"project": project_id})
+    if r.ok and isinstance(r.json(), list) and r.json():
+        roles = r.json()
+    else:
+        # Fallback to global roles if project-scoped query returns empty
+        r = _api_get("/api/v1/roles", token, params={})
+        roles = r.json() if r.ok else []
+    for role in roles or []:
+        try:
+            name = (role.get("name") or "").lower()
+            rid = int(role.get("id"))
+            if admin_id is None and ("admin" in name or "owner" in name):
+                admin_id = rid
+            if member_id is None and ("developer" in name or "member" in name):
+                member_id = rid
+        except Exception:
+            continue
+    return admin_id, member_id
+
+
+def _ensure_membership(project_id: int, user_id: int, role_id: int, token: str) -> None:
+    # Check existing
+    r = _api_get("/api/v1/memberships", token, params={"project": project_id, "user": user_id})
+    if r.ok and isinstance(r.json(), list) and r.json():
+        return
+    r = _api_post("/api/v1/memberships", token, {"project": project_id, "user": user_id, "role": role_id})
+    if not r.ok:
+        raise RuntimeError(f"membership create failed {r.status_code}: {r.text}")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="AIDA Bootstrap (clean progress UI)")
     p.add_argument("--bootstrap", action="store_true", help="Run full destructive bootstrap: reset + start")
@@ -816,6 +879,42 @@ def main(argv: list[str] | None = None) -> int:
         client.persist_auth("user", auth_res)
         repo_name = detect_repo_name()
         proj = client.get_or_create_project(repo_name, slugify(repo_name), enable_kanban=True)
+        # Ensure auxiliary users and memberships
+        for uname in ("ide", "scrum"):
+            upass = secrets.token_urlsafe(12)
+            auth_path = Path.cwd() / ".aida" / f"auth.{uname}.json"
+            try:
+                auth_path.write_text(json.dumps({"username": uname, "password": upass}, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+            try:
+                _ensure_taiga_user(uname, upass, f"{uname}@localhost")
+            except Exception as eu:
+                _append_log(f"ENSURE_USER({uname}) warn: {eu}")
+        # Memberships
+        admin_role, member_role = _get_role_ids(proj.id, auth_res.token)
+        uid_user = _get_user_id_by_username(admin_user, auth_res.token)
+        uid_ide = _get_user_id_by_username("ide", auth_res.token)
+        uid_scrum = _get_user_id_by_username("scrum", auth_res.token)
+        # Set owner to admin user when possible
+        if uid_user is not None:
+            try:
+                pr = _api_patch(f"/api/v1/projects/{proj.id}", auth_res.token, {"owner": uid_user})
+                if not pr.ok:
+                    _append_log(f"SET_OWNER warn {pr.status_code}: {pr.text}")
+            except Exception as po:
+                _append_log(f"SET_OWNER warn: {po}")
+        if uid_user and admin_role:
+            try:
+                _ensure_membership(proj.id, uid_user, admin_role, auth_res.token)
+            except Exception as em:
+                _append_log(f"ENSURE_MEMBERSHIP(user) warn: {em}")
+        for uid, label in ((uid_ide, "ide"), (uid_scrum, "scrum")):
+            if uid and (member_role or admin_role):
+                try:
+                    _ensure_membership(proj.id, uid, member_role or admin_role, auth_res.token)
+                except Exception as em:
+                    _append_log(f"ENSURE_MEMBERSHIP({label}) warn: {em}")
         client.persist_identities(proj)
         _append_log(f"RECONCILE success project={proj.slug}")
         evidence_text = _fmt_evidence(f"Evidence: project={proj.slug}")
@@ -835,6 +934,41 @@ def main(argv: list[str] | None = None) -> int:
                 client.persist_auth("user", auth_res)
                 repo_name = detect_repo_name()
                 proj = client.get_or_create_project(repo_name, slugify(repo_name), enable_kanban=True)
+                # Ensure auxiliary users and memberships
+                for uname in ("ide", "scrum"):
+                    upass = secrets.token_urlsafe(12)
+                    auth_path = Path.cwd() / ".aida" / f"auth.{uname}.json"
+                    try:
+                        auth_path.write_text(json.dumps({"username": uname, "password": upass}, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
+                    try:
+                        _ensure_taiga_user(uname, upass, f"{uname}@localhost")
+                    except Exception as eu:
+                        _append_log(f"ENSURE_USER({uname}) warn: {eu}")
+                # Memberships
+                admin_role, member_role = _get_role_ids(proj.id, auth_res.token)
+                uid_user = _get_user_id_by_username(admin_user, auth_res.token)
+                uid_ide = _get_user_id_by_username("ide", auth_res.token)
+                uid_scrum = _get_user_id_by_username("scrum", auth_res.token)
+                if uid_user is not None:
+                    try:
+                        pr = _api_patch(f"/api/v1/projects/{proj.id}", auth_res.token, {"owner": uid_user})
+                        if not pr.ok:
+                            _append_log(f"SET_OWNER warn {pr.status_code}: {pr.text}")
+                    except Exception as po:
+                        _append_log(f"SET_OWNER warn: {po}")
+                if uid_user and admin_role:
+                    try:
+                        _ensure_membership(proj.id, uid_user, admin_role, auth_res.token)
+                    except Exception as em:
+                        _append_log(f"ENSURE_MEMBERSHIP(user) warn: {em}")
+                for uid, label in ((uid_ide, "ide"), (uid_scrum, "scrum")):
+                    if uid and (member_role or admin_role):
+                        try:
+                            _ensure_membership(proj.id, uid, member_role or admin_role, auth_res.token)
+                        except Exception as em:
+                            _append_log(f"ENSURE_MEMBERSHIP({label}) warn: {em}")
                 client.persist_identities(proj)
                 _append_log(f"RECONCILE success project={proj.slug}")
                 evidence_text = _fmt_evidence(f"Evidence: project={proj.slug}")
