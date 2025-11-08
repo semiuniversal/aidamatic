@@ -42,3 +42,7 @@ aida-bridge = "aidamatic.bridge.cli:run_server"
  aida-setup = "aidamatic.cli.aida_setup:main"
  aida-uninstall = "aidamatic.cli.aida_uninstall:main"
  aida-bootstrap = "aidamatic.cli.bootstrap:main"
+ # Standalone provisioning
+ aida-make-users = "aidamatic.cli.make_users:main"
+ aida-make-members = "aidamatic.cli.make_members:main"
+ aida-make-project = "aidamatic.cli.make_project:main"
