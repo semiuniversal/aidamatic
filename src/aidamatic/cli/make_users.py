@@ -21,24 +21,29 @@ def ensure_taiga_user(username: str, password: str, email: str) -> bool:
 	"""Create Taiga user if missing (superuser/staff). Returns True if created, False if existed.
 	Existing users keep their current password (no reset).
 	"""
+	code = "\n".join([
+		"from django.contrib.auth import get_user_model",
+		"U=get_user_model()",
+		f"username={repr(username)}; email={repr(email)}; password={repr(password)}",
+		"user, created = U.objects.get_or_create(username=username, defaults={'email': email})",
+		"if created:",
+		"    user.email=email",
+		"    user.is_superuser=True",
+		"    user.is_staff=True",
+		"    user.set_password(password)",
+		"    user.save()",
+		"    print('CREATED')",
+		"else:",
+		"    changed=False",
+		"    if not user.email: user.email=email; changed=True",
+		"    if not user.is_superuser: user.is_superuser=True; changed=True",
+		"    if not user.is_staff: user.is_staff=True; changed=True",
+		"    if changed: user.save()",
+		"    print('EXISTING')",
+	])
 	djangocmd = (
 		"cd /taiga-back && "
-		"/opt/venv/bin/python manage.py shell -c \""
-		"from django.contrib.auth import get_user_model; "
-		"U=get_user_model(); "
-		f"username={repr(username)}; email={repr(email)}; password={repr(password)}; "
-		"user, created = U.objects.get_or_create(username=username, defaults={'email': email}); "
-		"if created: "
-		"    user.email=email; user.is_superuser=True; user.is_staff=True; user.set_password(password); user.save(); print('CREATED') "
-		"else: "
-		"    # keep existing password, just ensure flags and email if empty \n"
-		"    changed=False \n"
-		"    if not user.email: user.email=email; changed=True \n"
-		"    if not user.is_superuser: user.is_superuser=True; changed=True \n"
-		"    if not user.is_staff: user.is_staff=True; changed=True \n"
-		"    if changed: user.save() \n"
-		"    print('EXISTING')"
-		"\""
+		f"/opt/venv/bin/python manage.py shell -c \"{code}\""
 	)
 	last_err = None
 	for svc in ("taiga_back", "taiga-back"):

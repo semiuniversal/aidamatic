@@ -205,10 +205,30 @@ if [ "$BOOTSTRAP" -eq 1 ]; then
     echo "Running full bootstrap via Python controller (destructive reset + start)..."
     if command -v aida-bootstrap >/dev/null 2>&1; then
         aida-bootstrap --bootstrap
+        RC=$?
     else
         "$PYTHON_BIN" -m aidamatic.cli.bootstrap --bootstrap
+        RC=$?
     fi
-    exit $?
+    if [ "$RC" -eq 0 ]; then
+        echo "Provisioning users, project, and members (idempotent)..."
+        if command -v aida-make-users >/dev/null 2>&1; then
+            aida-make-users || true
+        else
+            "$PYTHON_BIN" -m aidamatic.cli.make_users || true
+        fi
+        if command -v aida-make-project >/dev/null 2>&1; then
+            aida-make-project || true
+        else
+            "$PYTHON_BIN" -m aidamatic.cli.make_project || true
+        fi
+        if command -v aida-make-members >/dev/null 2>&1; then
+            aida-make-members || true
+        else
+            "$PYTHON_BIN" -m aidamatic.cli.make_members || true
+        fi
+    fi
+    exit "$RC"
 fi
 
 # Optional: initialize and start services if requested
