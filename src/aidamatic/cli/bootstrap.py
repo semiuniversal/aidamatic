@@ -25,6 +25,7 @@ from collections import defaultdict
 import random
 import requests
 from aidamatic.taiga.pyclient import TaigaPyClient, slugify, detect_repo_name
+import string
 
 
 REPO_ROOT = Path.cwd()
@@ -288,6 +289,11 @@ class TokenBucket:
 def _sleep_with_jitter(base_s: float, low_ms: int = 100, high_ms: int = 300) -> None:
     jitter = random.uniform(low_ms / 1000.0, high_ms / 1000.0)
     time.sleep(max(0.0, base_s) + jitter)
+
+
+def _gen_password(length: int = 16) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def _ensure_taiga_user(username: str, password: str, email: str) -> None:
@@ -592,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.admin_pass:
             used_admin_pass = args.admin_pass
         else:
-            used_admin_pass = secrets.token_urlsafe(16)
+            used_admin_pass = _gen_password(16)
         cmd.extend(["--admin-pass", used_admin_pass])
         _append_log("RESET start")
         _log_event("S0: Reset", "reset_start")
@@ -881,7 +887,7 @@ def main(argv: list[str] | None = None) -> int:
         proj = client.get_or_create_project(repo_name, slugify(repo_name), enable_kanban=True)
         # Ensure auxiliary users and memberships
         for uname in ("ide", "scrum"):
-            upass = secrets.token_urlsafe(12)
+            upass = _gen_password(12)
             auth_path = Path.cwd() / ".aida" / f"auth.{uname}.json"
             try:
                 auth_path.write_text(json.dumps({"username": uname, "password": upass}, indent=2), encoding="utf-8")
@@ -936,7 +942,7 @@ def main(argv: list[str] | None = None) -> int:
                 proj = client.get_or_create_project(repo_name, slugify(repo_name), enable_kanban=True)
                 # Ensure auxiliary users and memberships
                 for uname in ("ide", "scrum"):
-                    upass = secrets.token_urlsafe(12)
+                    upass = _gen_password(12)
                     auth_path = Path.cwd() / ".aida" / f"auth.{uname}.json"
                     try:
                         auth_path.write_text(json.dumps({"username": uname, "password": upass}, indent=2), encoding="utf-8")
