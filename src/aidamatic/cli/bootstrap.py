@@ -296,6 +296,38 @@ def _sleep_with_jitter(base_s: float, low_ms: int = 100, high_ms: int = 300) -> 
     time.sleep(max(0.0, base_s) + jitter)
 
 
+def _ensure_taiga_user(username: str, password: str, email: str) -> None:
+    """Create or update a Taiga user inside the taiga-back container.
+    Makes the user a staff/superuser and sets the given password.
+    """
+    script = (
+        "python - <<'PY'\n"
+        "from django.contrib.auth import get_user_model\n"
+        "U=get_user_model()\n"
+        f"username={repr(username)}\n"
+        f"email={repr(email)}\n"
+        f"password={repr(password)}\n"
+        "user, created = U.objects.get_or_create(username=username, defaults={'email': email})\n"
+        "user.email=email\n"
+        "user.is_superuser=True\n"
+        "user.is_staff=True\n"
+        "user.set_password(password)\n"
+        "user.save()\n"
+        "print('OK')\n"
+        "PY"
+    )
+    try:
+        p = subprocess.run([
+            "docker", "compose", "-f", str(COMPOSE_FILE),
+            "exec", "-T", "taiga-back", "sh", "-lc", script
+        ], capture_output=True, text=True, timeout=60)
+        _append_log(f"ENSURE_USER rc={p.returncode} out={p.stdout.strip()} err={p.stderr.strip()}")
+        if p.returncode != 0:
+            raise RuntimeError(f"ensure user failed rc={p.returncode}")
+    except Exception as e:
+        raise RuntimeError(f"ensure user error: {e}")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="AIDA Bootstrap (clean progress UI)")
     p.add_argument("--bootstrap", action="store_true", help="Run full destructive bootstrap: reset + start")
@@ -797,10 +829,34 @@ def main(argv: list[str] | None = None) -> int:
         evidence_text = _fmt_evidence(f"Evidence: project={proj.slug}")
         live.update(render_group())
     except Exception as e:
-        _append_log(f"RECONCILE fail {e}")
-        progress.update(task_id, description=f"Reconcile failed — {e}")
-        live.update(render_group())
-        return _fail(15)
+        msg = str(e)
+        _append_log(f"RECONCILE first attempt failed: {msg}")
+        # If invalid credentials, ensure user and retry once
+        if "invalid_credentials" in msg or "No active account" in msg:
+            try:
+                email = (args.admin_email if hasattr(args, "admin_email") and args.admin_email else f"{admin_user}@localhost")
+                _append_log("ENSURE_USER start")
+                _ensure_taiga_user(admin_user, admin_pass, email)
+                _append_log("ENSURE_USER done; retry auth")
+                client = TaigaPyClient(host=GATEWAY_URL)
+                auth_res = client.authenticate(admin_user, admin_pass)
+                client.persist_auth("user", auth_res)
+                repo_name = detect_repo_name()
+                proj = client.get_or_create_project(repo_name, slugify(repo_name), enable_kanban=True)
+                client.persist_identities(proj)
+                _append_log(f"RECONCILE success project={proj.slug}")
+                evidence_text = _fmt_evidence(f"Evidence: project={proj.slug}")
+                live.update(render_group())
+            except Exception as e2:
+                _append_log(f"RECONCILE fail {e2}")
+                progress.update(task_id, description=f"Reconcile failed — {e2}")
+                live.update(render_group())
+                return _fail(15)
+        else:
+            _append_log(f"RECONCILE fail {e}")
+            progress.update(task_id, description=f"Reconcile failed — {e}")
+            live.update(render_group())
+            return _fail(15)
 
     # Phase: TX4 - Bridge health
     _set_state("S5: Bridge")
