@@ -24,6 +24,7 @@ import json
 from collections import defaultdict
 import random
 import requests
+from aidamatic.taiga.pyclient import TaigaPyClient, slugify, detect_repo_name
 
 
 REPO_ROOT = Path.cwd()
@@ -780,6 +781,26 @@ def main(argv: list[str] | None = None) -> int:
         _log_event("S4: Reconcile (API ready)", "fail", last_code=last_api_code if last_api_code is not None else "…")
         _write_progress_json()
         return _fail(13)
+
+    # S4: Reconcile identities and ensure project via python-taiga
+    try:
+        _append_log("RECONCILE start")
+        client = TaigaPyClient(host=GATEWAY_URL)
+        admin_user = args.admin_user if hasattr(args, "admin_user") else "user"
+        admin_pass = used_admin_pass or os.environ.get("TAIGA_ADMIN_PASSWORD", "")
+        auth_res = client.authenticate(admin_user, admin_pass)
+        client.persist_auth("user", auth_res)
+        repo_name = detect_repo_name()
+        proj = client.get_or_create_project(repo_name, slugify(repo_name), enable_kanban=True)
+        client.persist_identities(proj)
+        _append_log(f"RECONCILE success project={proj.slug}")
+        evidence_text = _fmt_evidence(f"Evidence: project={proj.slug}")
+        live.update(render_group())
+    except Exception as e:
+        _append_log(f"RECONCILE fail {e}")
+        progress.update(task_id, description=f"Reconcile failed — {e}")
+        live.update(render_group())
+        return _fail(15)
 
     # Phase: TX4 - Bridge health
     _set_state("S5: Bridge")
