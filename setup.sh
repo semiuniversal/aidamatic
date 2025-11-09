@@ -222,19 +222,19 @@ if [ "$BOOTSTRAP" -eq 1 ]; then
         else
             "$PYTHON_BIN" -m aidamatic.cli.make_project || true
         fi
-        # Ensure Scrum role exists (clone Back permissions, or rename Stakeholder)
+        # Ensure Agent role exists (clone Back permissions, or rename Stakeholder)
         if command -v aida-make-role >/dev/null 2>&1; then
-            aida-make-role --name "Scrum" --source "Back" || true
+            aida-make-role --name "Agent" --source "Back" || true
         else
-            "$PYTHON_BIN" -m aidamatic.cli.make_role --name "Scrum" --source "Back" || true
+            "$PYTHON_BIN" -m aidamatic.cli.make_role --name "Agent" --source "Back" || true
         fi
-        # Add ide as Back (role id 4); add scrum as Scrum by name
+        # Add ide/scrum as Agent
         if command -v aida-make-members >/dev/null 2>&1; then
-            aida-make-members --users ide --role-id 4 || true
-            aida-make-members --users scrum --role-name "Scrum" || true
+            aida-make-members --users ide --role-name "Agent" || true
+            aida-make-members --users scrum --role-name "Agent" || true
         else
-            "$PYTHON_BIN" -m aidamatic.cli.make_members --users ide --role-id 4 || true
-            "$PYTHON_BIN" -m aidamatic.cli.make_members --users scrum --role-name "Scrum" || true
+            "$PYTHON_BIN" -m aidamatic.cli.make_members --users ide --role-name "Agent" || true
+            "$PYTHON_BIN" -m aidamatic.cli.make_members --users scrum --role-name "Agent" || true
         fi
     fi
     # Echo selected ports

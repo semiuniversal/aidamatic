@@ -5,10 +5,16 @@ import time
 import socket
 import getpass
 import subprocess
+import shutil
+import signal
 from urllib.request import urlopen
 from urllib.error import URLError
 from pathlib import Path
 from typing import Optional
+
+STREAM_LOGS = False
+if any(arg == "--stream" for arg in sys.argv[1:]):
+	STREAM_LOGS = True
 
 AIDA_DIR = Path.cwd() / ".aida"
 DOCKER_ENV = Path.cwd() / "docker" / ".env"
@@ -134,6 +140,25 @@ def start_bridge_background() -> None:
 		print("Warning: AIDA Bridge did not become ready on http://127.0.0.1:8787/health within timeout.")
 
 
+def _spawn_streamers() -> list[subprocess.Popen]:
+	procs: list[subprocess.Popen] = []
+	try:
+		# Stream bridge log if present
+		AIDA_DIR.mkdir(parents=True, exist_ok=True)
+		bridge_log = AIDA_DIR / "bridge.log"
+		bridge_log.touch(exist_ok=True)
+		procs.append(subprocess.Popen(["tail", "-f", str(bridge_log)]))
+		# Stream compose logs for key services
+		compose_file = Path.cwd() / "docker" / "docker-compose.yml"
+		if compose_file.exists():
+			procs.append(subprocess.Popen([
+				"docker", "compose", "-f", str(compose_file), "logs", "-f", "--tail", "50", "taiga-back", "gateway", "taiga-front"
+			]))
+	except Exception:
+		pass
+	return procs
+
+
 def main() -> int:
 	print("AIDA start\n")
 	print("This can take several minutes. Please wait until the ready message before interacting.\n")
@@ -246,6 +271,18 @@ def main() -> int:
 	print("  aida-sync                 # push comment/status to Taiga")
 	print("\nOpen Taiga:   http://localhost:9000")
 	print("AIDA Bridge:  http://127.0.0.1:8787")
+	if STREAM_LOGS:
+		print("\nStreaming logs (Ctrl+C to stop)...")
+		procs = _spawn_streamers()
+		try:
+			for p in procs:
+				p.wait()
+		except KeyboardInterrupt:
+			for p in procs:
+				try:
+					p.terminate()
+				except Exception:
+					pass
 	return 0
 
 
