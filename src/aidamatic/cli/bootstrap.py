@@ -883,6 +883,18 @@ def main(argv: list[str] | None = None) -> int:
         admin_pass = used_admin_pass or os.environ.get("TAIGA_ADMIN_PASSWORD", "")
         auth_res = client.authenticate(admin_user, admin_pass)
         client.persist_auth("user", auth_res)
+        # Persist the admin password alongside token for UX (alphanumeric only already enforced upstream)
+        try:
+            auth_path = REPO_ROOT / ".aida" / "auth.user.json"
+            data = {}
+            if auth_path.exists():
+                data = json.loads(auth_path.read_text(encoding="utf-8"))
+            data["username"] = admin_user
+            if admin_pass:
+                data["password"] = admin_pass
+            auth_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
         repo_name = detect_repo_name()
         proj = client.get_or_create_project(repo_name, slugify(repo_name), enable_kanban=True)
         # Ensure auxiliary users and memberships
@@ -923,6 +935,24 @@ def main(argv: list[str] | None = None) -> int:
                     _append_log(f"ENSURE_MEMBERSHIP({label}) warn: {em}")
         client.persist_identities(proj)
         _append_log(f"RECONCILE success project={proj.slug}")
+        # Restart Bridge to pick up fresh credentials consistently
+        try:
+            _append_log("BRIDGE_RESTART start")
+            pr = subprocess.run(["aida-bridge-restart", "--port", str(_BRIDGE_PORT)], capture_output=True, text=True, timeout=30)
+            _append_log(f"BRIDGE_RESTART rc={pr.returncode} out={pr.stdout.strip()} err={pr.stderr.strip()}")
+        except Exception as ebr:
+            _append_log(f"BRIDGE_RESTART warn: {ebr}")
+        # Ensure role 'Agent' exists and assign to ide/scrum
+        try:
+            _append_log("ROLE Agent ensure start")
+            pr = subprocess.run(["aida-make-role", "--name", "Agent", "--source", "Back"], capture_output=True, text=True, timeout=30)
+            _append_log(f"ROLE Agent ensure rc={pr.returncode} out={pr.stdout.strip()} err={pr.stderr.strip()}")
+            pr2 = subprocess.run(["aida-make-members", "--users", "ide", "--role-name", "Agent"], capture_output=True, text=True, timeout=30)
+            _append_log(f"MEMBERS ide->Agent rc={pr2.returncode} out={pr2.stdout.strip()} err={pr2.stderr.strip()}")
+            pr3 = subprocess.run(["aida-make-members", "--users", "scrum", "--role-name", "Agent"], capture_output=True, text=True, timeout=30)
+            _append_log(f"MEMBERS scrum->Agent rc={pr3.returncode} out={pr3.stdout.strip()} err={pr3.stderr.strip()}")
+        except Exception as er:
+            _append_log(f"ROLE/MEMBERS warn: {er}")
         evidence_text = _fmt_evidence(f"Evidence: project={proj.slug}")
         live.update(render_group())
     except Exception as e:
@@ -938,6 +968,17 @@ def main(argv: list[str] | None = None) -> int:
                 client = TaigaPyClient(host=GATEWAY_URL)
                 auth_res = client.authenticate(admin_user, admin_pass)
                 client.persist_auth("user", auth_res)
+                try:
+                    auth_path = REPO_ROOT / ".aida" / "auth.user.json"
+                    data = {}
+                    if auth_path.exists():
+                        data = json.loads(auth_path.read_text(encoding="utf-8"))
+                    data["username"] = admin_user
+                    if admin_pass:
+                        data["password"] = admin_pass
+                    auth_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
                 repo_name = detect_repo_name()
                 proj = client.get_or_create_project(repo_name, slugify(repo_name), enable_kanban=True)
                 # Ensure auxiliary users and memberships
@@ -977,6 +1018,22 @@ def main(argv: list[str] | None = None) -> int:
                             _append_log(f"ENSURE_MEMBERSHIP({label}) warn: {em}")
                 client.persist_identities(proj)
                 _append_log(f"RECONCILE success project={proj.slug}")
+                try:
+                    _append_log("BRIDGE_RESTART start")
+                    pr = subprocess.run(["aida-bridge-restart", "--port", str(_BRIDGE_PORT)], capture_output=True, text=True, timeout=30)
+                    _append_log(f"BRIDGE_RESTART rc={pr.returncode} out={pr.stdout.strip()} err={pr.stderr.strip()}")
+                except Exception as ebr:
+                    _append_log(f"BRIDGE_RESTART warn: {ebr}")
+                try:
+                    _append_log("ROLE Agent ensure start")
+                    pr = subprocess.run(["aida-make-role", "--name", "Agent", "--source", "Back"], capture_output=True, text=True, timeout=30)
+                    _append_log(f"ROLE Agent ensure rc={pr.returncode} out={pr.stdout.strip()} err={pr.stderr.strip()}")
+                    pr2 = subprocess.run(["aida-make-members", "--users", "ide", "--role-name", "Agent"], capture_output=True, text=True, timeout=30)
+                    _append_log(f"MEMBERS ide->Agent rc={pr2.returncode} out={pr2.stdout.strip()} err={pr2.stderr.strip()}")
+                    pr3 = subprocess.run(["aida-make-members", "--users", "scrum", "--role-name", "Agent"], capture_output=True, text=True, timeout=30)
+                    _append_log(f"MEMBERS scrum->Agent rc={pr3.returncode} out={pr3.stdout.strip()} err={pr3.stderr.strip()}")
+                except Exception as er:
+                    _append_log(f"ROLE/MEMBERS warn: {er}")
                 evidence_text = _fmt_evidence(f"Evidence: project={proj.slug}")
                 live.update(render_group())
             except Exception as e2:
@@ -1040,11 +1097,36 @@ def main(argv: list[str] | None = None) -> int:
     live.stop()
 
     console.print(f"[bold]Done in[/bold] {_elapsed_str(start_ts)}")
-    console.print("Open Taiga:   http://localhost:9000")
-    console.print("AIDA Bridge:  http://127.0.0.1:8787")
-    console.print(f"Logs: {BOOTSTRAP_LOG}")
-    if used_admin_pass:
-        console.print(f"Admin account: user / {used_admin_pass}")
+    # Final summary block (URLs, logs, admin credentials)
+    try:
+        tport, bport = _current_ports()
+        admin_user = "user"
+        admin_pass = None
+        try:
+            data = json.loads((REPO_ROOT / ".aida" / "auth.user.json").read_text(encoding="utf-8"))
+            admin_user = data.get("username", admin_user)
+            admin_pass = data.get("password") or data.get("token")
+        except Exception:
+            pass
+        lines = []
+        lines.append(f"Open Taiga:   http://localhost:{tport}")
+        lines.append(f"AIDA Bridge:  http://127.0.0.1:{bport}")
+        lines.append(f"Logs: {str(BOOTSTRAP_LOG)}")
+        if admin_pass:
+            lines.append(f"Admin account: {admin_user} / {admin_pass}")
+        else:
+            lines.append(f"Admin account: {admin_user} (password in .aida/auth.user.json)")
+        summary_text = "\n".join(lines) + "\n"
+        # Print to console and write to file for setup.sh to display
+        console.print("")
+        for ln in lines:
+            console.print(ln)
+        try:
+            (REPO_ROOT / ".aida" / "summary.txt").write_text(summary_text, encoding="utf-8")
+        except Exception:
+            pass
+    except Exception:
+        pass
     return 0
 
 

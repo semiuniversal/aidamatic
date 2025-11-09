@@ -222,10 +222,46 @@ if [ "$BOOTSTRAP" -eq 1 ]; then
         else
             "$PYTHON_BIN" -m aidamatic.cli.make_project || true
         fi
-        if command -v aida-make-members >/dev/null 2>&1; then
-            aida-make-members || true
+        # Ensure Scrum role exists (clone Back permissions, or rename Stakeholder)
+        if command -v aida-make-role >/dev/null 2>&1; then
+            aida-make-role --name "Scrum" --source "Back" || true
         else
-            "$PYTHON_BIN" -m aidamatic.cli.make_members || true
+            "$PYTHON_BIN" -m aidamatic.cli.make_role --name "Scrum" --source "Back" || true
+        fi
+        # Add ide as Back (role id 4); add scrum as Scrum by name
+        if command -v aida-make-members >/dev/null 2>&1; then
+            aida-make-members --users ide --role-id 4 || true
+            aida-make-members --users scrum --role-name "Scrum" || true
+        else
+            "$PYTHON_BIN" -m aidamatic.cli.make_members --users ide --role-id 4 || true
+            "$PYTHON_BIN" -m aidamatic.cli.make_members --users scrum --role-name "Scrum" || true
+        fi
+    fi
+    # Echo selected ports
+    if [ -f .aida/ports.json ]; then
+        echo "Selected ports:"
+        cat .aida/ports.json
+    else
+        echo "Selected ports: TAIGA_HTTP_PORT=$(grep -E '^TAIGA_HTTP_PORT=' docker/.env | cut -d= -f2), Bridge=8787 (default)"
+    fi
+    # Print final bootstrap summary if present
+    if [ "$RC" -eq 0 ] && [ -f .aida/summary.txt ]; then
+        echo
+        cat .aida/summary.txt
+    elif [ "$RC" -eq 0 ]; then
+        # Fallback: compute and print summary if the file is missing
+        echo
+        TPORT=$(jq -r '.taiga_http // 9000' .aida/ports.json 2>/dev/null || echo 9000)
+        BPORT=$(jq -r '.bridge // 8787' .aida/ports.json 2>/dev/null || echo 8787)
+        ADMIN_USER=$(jq -r '.username // "user"' .aida/auth.user.json 2>/dev/null || echo user)
+        ADMIN_PASS=$(jq -r '.password // .token // empty' .aida/auth.user.json 2>/dev/null)
+        echo "Open Taiga:   http://localhost:${TPORT}"
+        echo "AIDA Bridge:  http://127.0.0.1:${BPORT}"
+        echo "Logs: $(pwd)/.aida/bootstrap-start.log"
+        if [ -n "$ADMIN_PASS" ]; then
+            echo "Admin account: ${ADMIN_USER} / ${ADMIN_PASS}"
+        else
+            echo "Admin account: ${ADMIN_USER} (password in .aida/auth.user.json)"
         fi
     fi
     exit "$RC"
